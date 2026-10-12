@@ -33,8 +33,8 @@ func TestRedact(t *testing.T) {
 		"skips empty secrets": {"abc", []string{""}, "abc"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := redact(tc.text, tc.secrets); got != tc.want {
-				t.Errorf("redact(%q, %q) = %q, want %q", tc.text, tc.secrets, got, tc.want)
+			if got := Redact(tc.text, tc.secrets); got != tc.want {
+				t.Errorf("Redact(%q, %q) = %q, want %q", tc.text, tc.secrets, got, tc.want)
 			}
 		})
 	}

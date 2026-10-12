@@ -146,11 +146,11 @@ func set(r *Result, typ string, ok bool, reason, msg string) {
 	r.Conditions[typ] = Condition{OK: ok, Reason: reason, Message: msg}
 }
 
-// redact removes every known secret from text that came back from an engine,
+// Redact removes every known secret from text that came back from an engine,
 // the network or the validator. It runs on every such call: none of them can be
 // trusted to keep secrets out of its errors. Longer secrets go first, so one
 // that contains another is not left half exposed.
-func redact(text string, secrets []string) string {
+func Redact(text string, secrets []string) string {
 	byLength := slices.SortedFunc(slices.Values(secrets), func(a, b string) int { return cmp.Compare(len(b), len(a)) })
 	for _, s := range byLength {
 		if s != "" {
@@ -168,7 +168,7 @@ func redact(text string, secrets []string) string {
 func (s *Stepper) Judge(ctx context.Context, in Instance) Result {
 	res := Result{Conditions: map[string]Condition{}}
 	secrets := in.Desired.Secrets()
-	s.judge(ctx, in, &res, func(err error) string { return redact(err.Error(), secrets) })
+	s.judge(ctx, in, &res, func(err error) string { return Redact(err.Error(), secrets) })
 	return res
 }
 
@@ -225,7 +225,7 @@ func (s *Stepper) judge(ctx context.Context, in Instance, res *Result, safe func
 func (s *Stepper) Step(ctx context.Context, ep engine.Endpoint, in Instance, st *State) Result {
 	res := Result{Conditions: map[string]Condition{}}
 	secrets := append(in.Desired.Secrets(), ep.Secrets()...)
-	safe := func(err error) string { return redact(err.Error(), secrets) }
+	safe := func(err error) string { return Redact(err.Error(), secrets) }
 	if !s.judge(ctx, in, &res, safe) {
 		return res
 	}
@@ -254,7 +254,7 @@ func (s *Stepper) Step(ctx context.Context, ep engine.Endpoint, in Instance, st 
 	rep, err := sess.Confirm(ctx)
 	if err != nil || rep.TunnelIngress != engine.GuardActive {
 		st.Revision = ""
-		msg := redact(rep.Detail, secrets)
+		msg := Redact(rep.Detail, secrets)
 		if err != nil {
 			msg = safe(err)
 		}
@@ -281,7 +281,7 @@ func (s *Stepper) Step(ctx context.Context, ep engine.Endpoint, in Instance, st 
 			reason = ReasonProgrammed
 		}
 	}
-	set(&res, CondRoutesProgrammed, state.Programmed, reason, redact(state.Message, secrets))
+	set(&res, CondRoutesProgrammed, state.Programmed, reason, Redact(state.Message, secrets))
 
 	obs, err := sess.Observe(ctx)
 	if err != nil {
