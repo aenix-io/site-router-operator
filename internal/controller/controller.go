@@ -39,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -520,6 +521,11 @@ func (r *Reconciler) preSharedKey(ctx context.Context, sr *v1alpha1.SiteRouter) 
 			return "", name, "", err
 		case s == nil:
 			return "", name, fmt.Sprintf("the Secret %q that holds the pre-shared key does not exist", name), nil
+		case controlledBySiteRouter(s):
+			// The operator reads this Secret with its own rights, on the word of
+			// whoever wrote the SiteRouter, who may not be allowed to read it. The key
+			// of another gateway is the one it must not hand over.
+			return "", name, fmt.Sprintf("the Secret %q belongs to a SiteRouter, and the key of one gateway is not used for another", name), nil
 		case len(s.Data["psk"]) == 0:
 			return "", name, fmt.Sprintf("the Secret %q has no key \"psk\"", name), nil
 		}
@@ -542,6 +548,17 @@ func (r *Reconciler) preSharedKey(ctx context.Context, sr *v1alpha1.SiteRouter) 
 		return "", name, "", fmt.Errorf("the Secret %s has no key \"psk\", and the operator does not write a Secret it has made", name)
 	}
 	return string(s.Data["psk"]), name, "", nil
+}
+
+// controlledBySiteRouter says whether a SiteRouter controls the object, which is
+// then the operator's own and made for a gateway.
+func controlledBySiteRouter(o client.Object) bool {
+	owner := metav1.GetControllerOf(o)
+	if owner == nil {
+		return false
+	}
+	gv, err := schema.ParseGroupVersion(owner.APIVersion)
+	return err == nil && gv.Group == v1alpha1.GroupVersion.Group && owner.Kind == "SiteRouter"
 }
 
 func (r *Reconciler) generateKey() (string, error) {

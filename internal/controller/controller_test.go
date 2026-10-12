@@ -349,3 +349,31 @@ func TestTheRevisionBelongsToTheSiteRouterItWasAppliedFor(t *testing.T) {
 		t.Errorf("another namespace was given %q", got.Revision)
 	}
 }
+
+// A key is not taken from the Secret of another gateway, which a SiteRouter
+// controls. A Secret that something else owns, such as the object a secret store
+// writes it from, is one a person has meant to be used.
+func TestOnlyASecretASiteRouterControlsIsAnotherGateways(t *testing.T) {
+	owned := func(apiVersion, kind string, controller bool) *corev1.Secret {
+		return &corev1.Secret{OwnerReferences: []metav1.OwnerReference{
+			{APIVersion: apiVersion, Kind: kind, Name: "x", UID: "u", Controller: &controller},
+		}}
+	}
+	for name, c := range map[string]struct {
+		secret *corev1.Secret
+		want   bool
+	}{
+		"made for a gateway":             {owned("siterouter.aenix.io/v1alpha1", "SiteRouter", true), true},
+		"another version of the API":     {owned("siterouter.aenix.io/v1beta1", "SiteRouter", true), true},
+		"owned, not controlled":          {owned("siterouter.aenix.io/v1alpha1", "SiteRouter", false), false},
+		"controlled by another kind":     {owned("siterouter.aenix.io/v1alpha1", "Forwarder", true), false},
+		"controlled by another group":    {owned("example.com/v1", "SiteRouter", true), false},
+		"controlled by a secret store":   {owned("external-secrets.io/v1", "ExternalSecret", true), false},
+		"an owner that is not a version": {owned("siterouter.aenix.io/v1/x/y", "SiteRouter", true), false},
+		"no owner":                       {&corev1.Secret{}, false},
+	} {
+		if got := controlledBySiteRouter(c.secret); got != c.want {
+			t.Errorf("%s: controlledBySiteRouter = %v, want %v", name, got, c.want)
+		}
+	}
+}

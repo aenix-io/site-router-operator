@@ -837,6 +837,36 @@ func TestWhatTheOperatorMadeItselfIsKeptOutOfAFailureToo(t *testing.T) {
 	}
 }
 
+// The operator reads the Secret a SiteRouter names with its own rights, for
+// someone who may not be allowed to read it. The key another gateway was made with
+// is not handed to this one, whatever the name.
+func TestTheKeyOfAnotherGatewayIsNotUsed(t *testing.T) {
+	g := newRig(t, func(_ *config.Config, sr *v1alpha1.SiteRouter) {
+		sr.Spec.Peer.Auth = &v1alpha1.PeerAuth{SecretRef: &v1alpha1.LocalSecretRef{Name: "site-router-other-psk"}}
+	})
+	yes := true
+	mustCreate(t, &corev1.Secret{
+		Name: "site-router-other-psk", Namespace: g.ns,
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: v1alpha1.GroupVersion.String(), Kind: "SiteRouter", Name: "other", UID: "another-site-router", Controller: &yes,
+		}},
+		Data: map[string][]byte{"psk": []byte("the-key-of-another-gateway")},
+	})
+	g.tenantPod()
+	g.reconcile()
+	g.sync()
+	g.boot()
+	g.reconcile()
+
+	g.expect(v1alpha1.ConditionGatewayReady, metav1.ConditionFalse, v1alpha1.ReasonPSKSecretPending)
+	if d, n := g.spy.last(); n != 0 {
+		t.Errorf("the engine was asked, with the tunnels %+v", d.Tunnels)
+	}
+	if msg := g.cond(v1alpha1.ConditionGatewayReady).Message; strings.Contains(msg, "the-key-of-another-gateway") {
+		t.Errorf("the condition carries the key: %q", msg)
+	}
+}
+
 // The cache of the operator holds only what carries its label, so a Forwarder that
 // someone else made under the name of the gateway is not in it. Applying over what
 // the cache does not show would take the object, whatever it was for.
