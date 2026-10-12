@@ -98,7 +98,13 @@ type IsolationMode string
 
 // Isolation modes.
 const (
-	// IsolationCilium has the operator create two CiliumNetworkPolicies.
+	// IsolationCilium has the operator create two CiliumNetworkPolicies: one
+	// denies the gateway the link-local range and what the configuration adds,
+	// the other admits to it the tunnel from the world and the management port
+	// for the operator. The deny rule holds whatever else the namespace allows.
+	// The admit rule does not: allow rules of Cilium add up, so a policy of the
+	// namespace that admits all ingress still reaches the gateway. Excluding the
+	// gateway from such a policy is for the platform to do.
 	IsolationCilium IsolationMode = "cilium"
 	// IsolationExternal leaves the isolation to the platform, which provides it
 	// itself. The operator creates no policy.

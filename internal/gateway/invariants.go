@@ -53,8 +53,9 @@ import (
 //   - the Secrets hold what the plan and the pre-shared key say, and none of
 //     those values is in an object that is not a Secret;
 //   - the policies, when there are any, select only the gateway, deny the
-//     link-local range, and admit nothing to the gateway beyond the tunnel from
-//     the world and the management port for the operator.
+//     link-local range, and in their own rules admit nothing to the gateway
+//     beyond the tunnel from the world and the management port for the
+//     operator. What other policies of the namespace admit is not up to them.
 func assertInvariants(in Input, objs []client.Object) error {
 	a := &audit{in: in, names: NamesFor(in.Instance.Name)}
 	a.run(objs)
