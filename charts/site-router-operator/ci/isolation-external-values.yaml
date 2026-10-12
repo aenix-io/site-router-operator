@@ -1,0 +1,15 @@
+# The platform isolates the gateway itself.
+config:
+  managementCIDR: 10.244.0.0/16
+  clusterNetworks:
+    podCIDR: 10.244.0.0/16
+    serviceCIDR: 10.96.0.0/16
+  engine:
+    name: appliance
+    versions:
+      - name: "1.0"
+        image: registry.example/disk:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    latest: "1.0"
+  gateway:
+    isolation:
+      mode: external

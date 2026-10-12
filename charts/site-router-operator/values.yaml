@@ -1,0 +1,234 @@
+# Default values for site-router-operator.
+
+# How many operator pods run. Only the leader reconciles, so more than one needs
+# leaderElection.enabled and only shortens a failover.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/aenix-io/site-router-operator
+  # Defaults to the appVersion of the chart.
+  tag: ""
+  # sha256:<64 hex digits>. When set, the image is pulled by it and the tag is
+  # only informative: set it back to "" when you set another tag.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # When false, the service account named below must exist; the chart still
+  # binds its roles to it.
+  create: true
+  # Defaults to the full name of the release.
+  name: ""
+  annotations: {}
+
+leaderElection:
+  # The replicas take turns at a Lease in the namespace of the release. The
+  # chart grants that Lease and the events of leader election in that
+  # namespace only, and only when this is on.
+  enabled: true
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+# The probes are served on the port named health (8081).
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: health
+  initialDelaySeconds: 15
+  periodSeconds: 20
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: health
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# More flags of the manager, e.g. --zap-log-level=info or --zap-devel=false for
+# JSON logs.
+extraArgs: []
+
+metrics:
+  # Serve the metrics of the operator (site_router_* and those of
+  # controller-runtime). Off, the manager binds no metrics port.
+  enabled: false
+  port: 8443
+  # Serve over HTTPS with a self-signed certificate and admit only callers whose
+  # token may get /metrics. The operator then checks tokens and access with the
+  # apiserver, and the chart grants it that (tokenreviews and
+  # subjectaccessreviews, create) and makes a ClusterRole <fullname>-metrics-reader
+  # to bind to the scraper. Off, the metrics are plain HTTP to anyone who
+  # reaches the port.
+  secure: true
+  service:
+    enabled: true
+    annotations: {}
+  # A ServiceMonitor of the Prometheus operator. Needs metrics.service.enabled.
+  serviceMonitor:
+    enabled: false
+    labels: {}
+    interval: ""
+    scrapeTimeout: ""
+    # The certificate is self-signed, so it cannot be verified; the token of the
+    # scraper is what the operator checks.
+    tlsConfig:
+      insecureSkipVerify: true
+
+podDisruptionBudget:
+  enabled: false
+  # Set one of the two. minAvailable wins when both are set.
+  minAvailable: ""
+  maxUnavailable: 1
+
+# The configuration of the operator: what the platform decides about gateways
+# and a SiteRouter does not say. It is written to a ConfigMap as is and read by
+# the operator once, when it starts; a change rolls the pods. The operator
+# refuses to start on a key it does not know and on any value it cannot use,
+# and says which. The keys are those of internal/config/config.go; a key that is
+# commented out here takes the default of the operator, shown beside it.
+config:
+  # Required. Where the management API of a gateway accepts calls from: the pod
+  # network of the platform, where the operator runs. An IPv4 network in
+  # canonical form and not 0.0.0.0/0: the management API is never left open.
+  managementCIDR: ""
+
+  # The networks of the cluster that the networks of a tenant must not overlap.
+  # They have no defaults: a pod network assumed for one distribution would let
+  # a tenant route into the pods of another. The addresses of the nodes and of
+  # the load balancers are discovered and need not be listed.
+  clusterNetworks:
+    # Required. The pod network.
+    podCIDR: ""
+    # Required. The service network.
+    serviceCIDR: ""
+    # The network that joins the nodes to the pod network, where the cluster
+    # network has one (the join subnet of Kube-OVN).
+    # joinCIDR: ""
+    # Any other networks the platform keeps off the tenants.
+    # extraCIDRs: []
+
+  # The appliance gateways run, and the images it comes in.
+  engine:
+    # Required. The engine the operator drives; it must be built into the image
+    # (cmd/engines.go), or the operator stops at start saying it is not
+    # registered.
+    name: ""
+    # Required. The versions of the disk image that gateways can run, each
+    # pinned by digest: {name: "<version>", image: "<repository>[:<tag>]@sha256:<digest>"}.
+    # The engine must be able to drive every version listed.
+    versions: []
+    # Required. The version new gateways are made with, and the one they move to
+    # when upgrade.policy is auto. One of the names in versions.
+    latest: ""
+
+  # When a gateway moves to another image. A move drops the tunnel of the gateway
+  # while the new disk boots.
+  upgrade:
+    # auto: every gateway moves to engine.latest. annotation: a gateway moves
+    # only to the version named by its annotation siterouter.aenix.io/upgrade-to,
+    # which wins under both policies.
+    policy: auto
+    # How many gateways move at once, across every namespace.
+    # maxConcurrent: 2
+    # How long the disk of the new image may take to import before the move is
+    # given up and the gateway stays on its image.
+    # importTimeout: 30m
+    # How long a gateway may take to run on the new disk before it gives back its
+    # place and says it did not come up.
+    # bootTimeout: 15m
+
+  # How a gateway is made.
+  gateway:
+    # Who keeps the gateway pod apart from the other pods.
+    isolation:
+      # cilium: the operator makes two CiliumNetworkPolicies, which need Cilium
+      # in the cluster. external: the platform isolates the gateway itself and
+      # the operator makes no policy. none: no isolation, which also needs
+      # acknowledgeNone: true.
+      mode: cilium
+      # acknowledgeNone: false
+      # The pods that may call the management API under cilium. Left out, the
+      # chart fills it in with the namespace of the release and the selector
+      # labels of the operator pods.
+      # controller:
+      #   namespace: ""
+      #   labels: {}
+      # Denied to the gateway on top of the link-local range, which always is.
+      # IPv4 networks in canonical form.
+      # egressDenyCIDRs: []
+
+    # The placement and metadata of the gateway pod. The labels and annotations
+    # the gateway depends on, those under siterouter.aenix.io/ and the
+    # architecture in nodeSelector (it comes from the engine) are refused.
+    # vm:
+    #   podAnnotations: {}
+    #   podLabels: {}
+    #   nodeSelector: {}
+    #   tolerations: []
+    #   affinity: {}
+    #   priorityClassName: ""
+    #   runtimeClassName: ""
+
+    # How the boot disk is stored and imported.
+    # dataVolume:
+    #   # Used when a SiteRouter names no storage class. Empty means the default
+    #   # class of the cluster.
+    #   storageClass: ""
+    #   # Powers of two from 512 to 4096, logical not above physical. A DRBD
+    #   # volume on a 4Kn device needs 512 and 4096.
+    #   blockSize: {logical: 512, physical: 4096}
+    #   source:
+    #     # pod: the importer pulls; node: the node pulls, with its registry
+    #     # mirrors. Empty leaves it to the importer.
+    #     pullMethod: ""
+    #     # A ConfigMap with the certificates of the registry.
+    #     certConfigMap: ""
+    #     # A Secret with the credentials of the registry.
+    #     secretRef: ""
+
+    # How the tunnel Service is published. loadBalancerClass cannot be changed
+    # on a Service that exists.
+    # service:
+    #   loadBalancerClass: ""
+    #   annotations: {}
+
+  # How long the operator waits for, and how often it looks.
+  # timing:
+  #   # How long a request for routes goes unanswered before the condition says
+  #   # no connector serves it.
+  #   forwarderNotResponding: 1m
+  #   # How often a gateway is looked at when nothing has changed.
+  #   poll: 30s
+  #   # How long the addresses of the nodes and load balancers are kept.
+  #   discovery: 1m

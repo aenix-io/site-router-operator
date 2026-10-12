@@ -1,0 +1,16 @@
+# Patterns to ignore when building packages.
+.DS_Store
+.git/
+.gitignore
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+.idea/
+.vscode/
+# The suites of helm-unittest and the value sets the chart is linted and tested
+# with are not part of the package. The value sets name example networks that an
+# installation must not take for defaults.
+tests/
+ci/

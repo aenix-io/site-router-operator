@@ -109,9 +109,14 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	"$(GOLANGCI_LINT)" config verify
 
+CHART_DIR ?= charts/site-router-operator
+
+# The chart has no defaults for the networks of the cluster, the management
+# network and the engine, so it is linted with each of the value sets in its ci
+# directory, which set them.
 .PHONY: helm-lint
-helm-lint: ## Lint the operator chart; skipped until the chart exists.
-	@if [ -d charts/site-router-operator ]; then helm lint --strict charts/site-router-operator; else echo "No chart yet (charts/site-router-operator): skipping."; fi
+helm-lint: ## Lint the operator chart with every value set in its ci directory.
+	for f in $(CHART_DIR)/ci/*-values.yaml; do echo "== $$f"; helm lint --strict $(CHART_DIR) --values "$$f" || exit 1; done
 
 ##@ Build
 

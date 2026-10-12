@@ -1,0 +1,161 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Values of the site-router-operator chart",
+  "description": "The values the chart uses are checked here in full. Under config only what an installation must set is checked, so that it fails at install and not when the operator starts; every other key and value of config is checked by the operator, which refuses to start on what it cannot use.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image", "config"],
+  "properties": {
+    "global": {"type": "object"},
+    "replicaCount": {"type": "integer", "minimum": 0},
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string"},
+        "digest": {
+          "type": "string",
+          "anyOf": [
+            {"maxLength": 0},
+            {"pattern": "^sha256:[0-9a-f]{64}$"}
+          ]
+        },
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"type": "string", "minLength": 1}}
+      }
+    },
+    "nameOverride": {"type": "string"},
+    "fullnameOverride": {"type": "string"},
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {"type": "boolean"},
+        "name": {"type": "string"},
+        "annotations": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
+    "leaderElection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"}
+      }
+    },
+    "podAnnotations": {"type": "object", "additionalProperties": {"type": "string"}},
+    "podLabels": {"type": "object", "additionalProperties": {"type": "string"}},
+    "podSecurityContext": {"type": "object"},
+    "securityContext": {"type": "object"},
+    "resources": {"type": "object"},
+    "livenessProbe": {"type": "object"},
+    "readinessProbe": {"type": "object"},
+    "priorityClassName": {"type": "string"},
+    "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+    "tolerations": {"type": "array", "items": {"type": "object"}},
+    "affinity": {"type": "object"},
+    "extraArgs": {"type": "array", "items": {"type": "string"}},
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535, "not": {"const": 8081}},
+        "secure": {"type": "boolean"},
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "annotations": {"type": "object", "additionalProperties": {"type": "string"}}
+          }
+        },
+        "serviceMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "labels": {"type": "object", "additionalProperties": {"type": "string"}},
+            "interval": {"type": "string"},
+            "scrapeTimeout": {"type": "string"},
+            "tlsConfig": {"type": "object"}
+          }
+        }
+      }
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "minAvailable": {"type": ["integer", "string"]},
+        "maxUnavailable": {"type": ["integer", "string"]}
+      }
+    },
+    "config": {
+      "type": "object",
+      "required": ["managementCIDR", "clusterNetworks", "engine", "upgrade", "gateway"],
+      "properties": {
+        "managementCIDR": {"type": "string", "minLength": 1},
+        "clusterNetworks": {
+          "type": "object",
+          "required": ["podCIDR", "serviceCIDR"],
+          "properties": {
+            "podCIDR": {"type": "string", "minLength": 1},
+            "serviceCIDR": {"type": "string", "minLength": 1},
+            "joinCIDR": {"type": "string"},
+            "extraCIDRs": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "engine": {
+          "type": "object",
+          "required": ["name", "versions", "latest"],
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "versions": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["name", "image"],
+                "properties": {
+                  "name": {"type": "string", "minLength": 1},
+                  "image": {"type": "string", "minLength": 1}
+                }
+              }
+            },
+            "latest": {"type": "string", "minLength": 1}
+          }
+        },
+        "upgrade": {
+          "type": "object",
+          "required": ["policy"],
+          "properties": {
+            "policy": {"type": "string", "enum": ["auto", "annotation"]}
+          }
+        },
+        "gateway": {
+          "type": "object",
+          "required": ["isolation"],
+          "properties": {
+            "isolation": {
+              "type": "object",
+              "required": ["mode"],
+              "properties": {
+                "mode": {"type": "string", "enum": ["cilium", "external", "none"]}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

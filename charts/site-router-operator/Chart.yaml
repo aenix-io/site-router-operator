@@ -1,0 +1,17 @@
+apiVersion: v2
+name: site-router-operator
+description: Brings up routed site-to-site IPsec gateways from SiteRouter resources.
+type: application
+# The release workflow sets both from the tag. What is here is the version of the
+# tree, which no image is published for.
+version: 0.1.0-dev
+appVersion: "0.1.0-dev"
+# The CRDs validate CIDRs with the CEL library that first shipped in 1.31.
+kubeVersion: ">=1.31.0-0"
+home: https://github.com/aenix-io/site-router-operator
+sources:
+  - https://github.com/aenix-io/site-router-operator
+keywords:
+  - ipsec
+  - kubevirt
+  - operator
