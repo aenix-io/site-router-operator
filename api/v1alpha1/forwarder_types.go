@@ -32,6 +32,15 @@ import (
 type ForwarderSpec struct {
 	// workloadSelector selects the pods that forward: the gateway.
 	//
+	// A label is written by whoever makes the pod, so a pod that carries the label
+	// is not for that reason the gateway. A connector grants forwarding, and with
+	// it an end to the anti-spoofing of the network, only to a selected pod that
+	// is also the pod of the VirtualMachineInstance of the gateway: the one named
+	// like the Forwarder, which controls it. An owner reference can be written by
+	// whoever makes the pod as well, so where the network can, it checks the pod
+	// against the active pods in the status of that VirtualMachineInstance, which
+	// only KubeVirt writes.
+	//
 	// +required
 	WorkloadSelector metav1.LabelSelector `json:"workloadSelector"`
 
