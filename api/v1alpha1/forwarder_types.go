@@ -96,7 +96,14 @@ type ForwarderStatus struct {
 	// reach must not be here. A connector leaves out the pods that are being
 	// deleted, because their address goes back to the pool and may be given to a
 	// pod of another namespace, the pods that have finished, the pods on the host
-	// network, whose address is that of a node, and every gateway.
+	// network, whose address is that of a node, and the gateways: the pods that
+	// the workloadSelector of any Forwarder of the namespace selects, not only
+	// of this one.
+	//
+	// The operator does not take the list on trust. It drops from it what is not
+	// an IPv4 address of the tenant, such as the address of a node, of a load
+	// balancer, or of the link-local and loopback ranges, before it opens the
+	// gateway to the rest. Only the connector is meant to write the status.
 	//
 	// +optional
 	Scope AddressSet `json:"scope,omitzero"`
