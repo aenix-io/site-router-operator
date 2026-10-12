@@ -30,45 +30,17 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/yaml"
 
 	"github.com/aenix-io/site-router-operator/api/v1alpha1"
+	"github.com/aenix-io/site-router-operator/internal/testenv"
 )
 
 var k8sClient client.Client
 
 func TestMain(m *testing.M) {
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		fmt.Fprintln(os.Stderr, "KUBEBUILDER_ASSETS is not set: run these tests with `make test` or `make test-crd`")
-		os.Exit(1)
-	}
-	scheme := runtime.NewScheme()
-	utilruntime.Must(v1alpha1.AddToScheme(scheme))
-
-	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
-		ErrorIfCRDPathMissing: true,
-	}
-	cfg, err := env.Start()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "starting envtest:", err)
-		os.Exit(1)
-	}
-	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "creating a client:", err)
-		_ = env.Stop()
-		os.Exit(1)
-	}
-	code := m.Run()
-	if err := env.Stop(); err != nil {
-		fmt.Fprintln(os.Stderr, "stopping envtest:", err)
-	}
-	os.Exit(code)
+	testenv.Main(m, func(c client.Client) { k8sClient = c })
 }
 
 // create creates obj and removes it when the test ends.
