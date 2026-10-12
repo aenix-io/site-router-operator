@@ -131,6 +131,10 @@ spec:
                   description: |-
                     IPv4CIDR is an IPv4 network in canonical form that is not the default route.
 
+                    Only what is wrong whatever the cluster is rejected here. Whether a network
+                    overlaps the networks of the cluster, or is loopback or link-local, is judged
+                    by the controller against the cluster itself, not by this schema.
+
                     The length limit is what lets the apiserver bound the cost of the rules.
                   maxLength: 18
                   type: string
