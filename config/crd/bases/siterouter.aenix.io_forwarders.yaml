@@ -1,0 +1,285 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: forwarders.siterouter.aenix.io
+spec:
+  group: siterouter.aenix.io
+  names:
+    kind: Forwarder
+    listKind: ForwarderList
+    plural: forwarders
+    singular: forwarder
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Forwarder asks the cluster network to route networks to a gateway and to let
+          the gateway forward their traffic.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec is the desired state.
+            properties:
+              cidrs:
+                description: |-
+                  cidrs are the networks that are routed to the gateway. They are also the
+                  networks the gateway may forward traffic from and to. While the list is
+                  empty the connector grants nothing and programs no routes.
+                items:
+                  description: |-
+                    IPv4CIDR is an IPv4 network in canonical form that is not the default route.
+
+                    The length limit is what lets the apiserver bound the cost of the rules.
+                  maxLength: 18
+                  type: string
+                  x-kubernetes-validations:
+                  - message: must be an IPv4 CIDR
+                    rule: isCIDR(self) && cidr(self).ip().family() == 4
+                  - message: a default route (/0) is not allowed
+                    rule: '!isCIDR(self) || cidr(self).prefixLength() > 0'
+                  - message: host bits must be zero (use the network address)
+                    rule: '!isCIDR(self) || string(cidr(self).masked()) == self'
+                maxItems: 16
+                type: array
+                x-kubernetes-list-type: set
+              scopeSelector:
+                description: |-
+                  scopeSelector selects the pods that need a route to the gateway: the
+                  tenant's workloads. Empty selects every pod of the namespace.
+                properties:
+                  matchExpressions:
+                    description: matchExpressions is a list of label selector requirements.
+                      The requirements are ANDed.
+                    items:
+                      description: |-
+                        A label selector requirement is a selector that contains values, a key, and an operator that
+                        relates the key and values.
+                      properties:
+                        key:
+                          description: key is the label key that the selector applies
+                            to.
+                          type: string
+                        operator:
+                          description: |-
+                            operator represents a key's relationship to a set of values.
+                            Valid operators are In, NotIn, Exists and DoesNotExist.
+                          type: string
+                        values:
+                          description: |-
+                            values is an array of string values. If the operator is In or NotIn,
+                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                            the values array must be empty. This array is replaced during a strategic
+                            merge patch.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                      map is equivalent to an element of matchExpressions, whose key field is "key", the
+                      operator is "In", and the values array contains only "value". The requirements are ANDed.
+                    type: object
+                type: object
+                x-kubernetes-map-type: atomic
+              workloadSelector:
+                description: 'workloadSelector selects the pods that forward: the
+                  gateway.'
+                properties:
+                  matchExpressions:
+                    description: matchExpressions is a list of label selector requirements.
+                      The requirements are ANDed.
+                    items:
+                      description: |-
+                        A label selector requirement is a selector that contains values, a key, and an operator that
+                        relates the key and values.
+                      properties:
+                        key:
+                          description: key is the label key that the selector applies
+                            to.
+                          type: string
+                        operator:
+                          description: |-
+                            operator represents a key's relationship to a set of values.
+                            Valid operators are In, NotIn, Exists and DoesNotExist.
+                          type: string
+                        values:
+                          description: |-
+                            values is an array of string values. If the operator is In or NotIn,
+                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                            the values array must be empty. This array is replaced during a strategic
+                            merge patch.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                      map is equivalent to an element of matchExpressions, whose key field is "key", the
+                      operator is "In", and the values array contains only "value". The requirements are ANDed.
+                    type: object
+                type: object
+                x-kubernetes-map-type: atomic
+            required:
+            - workloadSelector
+            type: object
+            x-kubernetes-validations:
+            - message: workloadSelector must select something
+              rule: (has(self.workloadSelector.matchLabels) && size(self.workloadSelector.matchLabels)
+                > 0) || (has(self.workloadSelector.matchExpressions) && size(self.workloadSelector.matchExpressions)
+                > 0)
+          status:
+            description: status is the state the connector reports.
+            properties:
+              conditions:
+                description: |-
+                  conditions describe the state. The types are the Forwarder* constants of
+                  this package.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              forwarder:
+                description: |-
+                  forwarder holds the addresses of the pods selected by workloadSelector.
+                  They are the next hop of the routes.
+                properties:
+                  addresses:
+                    description: addresses are IP addresses in the addressing of the
+                      cluster network.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                type: object
+              observedGeneration:
+                description: observedGeneration is the generation the status was computed
+                  for.
+                format: int64
+                type: integer
+              pendingWorkloads:
+                description: |-
+                  pendingWorkloads are the names of pods in scope that were created before
+                  their routes were in place. On networks that apply routes only when a
+                  pod is created, they need to be restarted.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              scope:
+                description: |-
+                  scope holds the addresses of the pods selected by scopeSelector. They
+                  are what the gateway lets decrypted traffic through to.
+                properties:
+                  addresses:
+                    description: addresses are IP addresses in the addressing of the
+                      cluster network.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
