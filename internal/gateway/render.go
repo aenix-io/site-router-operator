@@ -208,24 +208,9 @@ type renderer struct {
 	names Names
 }
 
-func (r renderer) labels() map[string]string {
-	return map[string]string{
-		v1alpha1.LabelManagedBy: v1alpha1.ManagedByValue,
-		v1alpha1.LabelInstance:  r.in.Instance.Name,
-	}
-}
+func (r renderer) labels() map[string]string { return Labels(r.in.Instance.Name) }
 
-func (r renderer) owner() metav1.OwnerReference {
-	t := true
-	return metav1.OwnerReference{
-		APIVersion:         v1alpha1.GroupVersion.String(),
-		Kind:               "SiteRouter",
-		Name:               r.in.Instance.Name,
-		UID:                r.in.Instance.UID,
-		Controller:         &t,
-		BlockOwnerDeletion: &t,
-	}
-}
+func (r renderer) owner() metav1.OwnerReference { return OwnerReference(r.in.Instance) }
 
 func (r renderer) meta(name string) metav1.ObjectMeta {
 	return metav1.ObjectMeta{
