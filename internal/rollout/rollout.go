@@ -88,17 +88,7 @@ func Decide(cfg config.Config, cur Current, annotation string) (Decision, error)
 		return latest, nil
 	}
 
-	stay := Decision{Target: cur.Version}
-	listedImage, listed := cfg.Engine.Image(cur.Version)
-	switch {
-	case listed && digestOf(listedImage) == cur.Digest:
-		stay.Image = listedImage
-	default:
-		// What runs is not what is listed under its name, or is not listed. The
-		// repository of the latest stands in for its own.
-		stay.Image = withDigest(latestImage, cur.Digest)
-		stay.Orphaned = true
-	}
+	stay := stayAt(cfg, cur, latestImage)
 
 	target := func(name string) (Decision, bool) {
 		img, ok := cfg.Engine.Image(name)
@@ -123,6 +113,32 @@ func Decide(cfg config.Config, cur Current, annotation string) (Decision, error)
 		return d, nil
 	}
 	return stay, nil
+}
+
+// stayAt is the decision to keep a gateway on the image it runs.
+func stayAt(cfg config.Config, cur Current, latestImage string) Decision {
+	stay := Decision{Target: cur.Version}
+	if listed, ok := cfg.Engine.Image(cur.Version); ok && digestOf(listed) == cur.Digest {
+		stay.Image = listed
+		return stay
+	}
+	// What runs is not what is listed under its name, or is not listed. The
+	// repository of the latest stands in for its own.
+	stay.Image = withDigest(latestImage, cur.Digest)
+	stay.Orphaned = true
+	return stay
+}
+
+// Stay returns the decision to keep a gateway on the image it runs, whatever the
+// policy and the annotation say. It is what a gateway that is to move runs from
+// until the disk of the other image is ready, and what one that may not move yet
+// goes on running.
+func Stay(cfg config.Config, cur Current) (Decision, error) {
+	latestImage, ok := cfg.Engine.Image(cfg.Engine.Latest)
+	if !ok {
+		return Decision{}, fmt.Errorf("the latest version %q is not listed: the configuration was not checked", cfg.Engine.Latest)
+	}
+	return stayAt(cfg, cur, latestImage), nil
 }
 
 // digestOf is the digest an image is pinned by, or "" when it has none.

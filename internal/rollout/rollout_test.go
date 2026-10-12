@@ -51,11 +51,41 @@ func cfg(policy config.UpgradePolicy) config.Config {
 var (
 	d11 = digestOf(img11)
 	d10 = digestOf(img10)
+	// d09x is the digest of a build of a version that is not listed at all.
+	d09x = "sha256:" + "cd" + d10[9:]
 	// digestOld is a build of version 1.0 that is not the one that is listed.
 	digestOld = "sha256:" + "ab" + d10[9:]
 )
 
 func at(version, digest string) Current { return Current{Version: version, Digest: digest} }
+
+// A gateway that is to move runs from what it has until the disk of the other image
+// is ready, and one that is not let move yet goes on with it: the policy and the
+// annotation do not matter to what it runs now.
+func TestStay(t *testing.T) {
+	for name, c := range map[string]struct {
+		current Current
+		want    Decision
+	}{
+		"listed":               {at("1.0", d10), Decision{Target: "1.0", Image: img10}},
+		"the latest":           {at("1.1", d11), Decision{Target: "1.1", Image: img11}},
+		"another build":        {at("1.0", digestOld), Decision{Target: "1.0", Image: withDigest(img11, digestOld), Orphaned: true}},
+		"a version not listed": {at("0.1", d09x), Decision{Target: "0.1", Image: withDigest(img11, d09x), Orphaned: true}},
+	} {
+		for _, policy := range []config.UpgradePolicy{config.UpgradeAuto, config.UpgradeAnnotation} {
+			got, err := Stay(cfg(policy), c.current)
+			if err != nil || got != c.want {
+				t.Errorf("%s (%s): Stay = %+v, %v; want %+v", name, policy, got, err, c.want)
+			}
+		}
+	}
+
+	bad := cfg(config.UpgradeAuto)
+	bad.Engine.Latest = "7.7"
+	if _, err := Stay(bad, at("1.0", d10)); err == nil {
+		t.Error("Stay with a latest version that is not listed gave no error")
+	}
+}
 
 func TestDecide(t *testing.T) {
 	cases := []struct {
