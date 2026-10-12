@@ -25,31 +25,52 @@ import (
 	"github.com/aenix-io/site-router-operator/internal/reconcile"
 )
 
-// NewValidator returns the validator of the operator: it judges what an
-// instance is going to program into the gateway against the networks of the
-// cluster, which are those of the configuration and those found by the
-// Discoverer.
-//
-// A rejection is a RejectedError, whose text is for a tenant. Failing to learn
-// the networks of the cluster is not a rejection: the error wraps
-// reconcile.ErrValidationUnavailable, so that the pass leaves the routes as they
-// are until the cluster answers.
-func NewValidator(cfg Config, d *Discoverer) (reconcile.Validator, error) {
+// Source knows the networks of the cluster: those of the configuration and those
+// found by the Discoverer. The validator judges against them, and what the
+// source filter of a gateway is opened to is checked against them too, so both
+// ask the same Source and cannot disagree.
+type Source struct {
+	configured Networks
+	d          *Discoverer
+}
+
+// NewSource returns a Source for a configuration and a Discoverer, and refuses a
+// configuration that does not hold together.
+func NewSource(cfg Config, d *Discoverer) (*Source, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("the networks of the cluster: %w", err)
 	}
 	if d == nil {
 		return nil, errors.New("a Discoverer is required: without one the deny set would not know the nodes and the load balancers")
 	}
-	configured := cfg.Networks()
-	return func(ctx context.Context, in reconcile.Instance) error {
-		found, err := d.Discover(ctx)
-		if err != nil {
-			return fmt.Errorf("%w: %w", reconcile.ErrValidationUnavailable, err)
-		}
-		nets := configured
-		nets.Nodes, nets.LoadBalancers = found.Nodes, found.LoadBalancers
+	return &Source{configured: cfg.Networks(), d: d}, nil
+}
 
+// Networks returns the networks of the cluster. Failing to learn them is not a
+// verdict about anything: the error wraps reconcile.ErrValidationUnavailable.
+func (s *Source) Networks(ctx context.Context) (Networks, error) {
+	found, err := s.d.Discover(ctx)
+	if err != nil {
+		return Networks{}, fmt.Errorf("%w: %w", reconcile.ErrValidationUnavailable, err)
+	}
+	nets := s.configured
+	nets.Nodes, nets.LoadBalancers = found.Nodes, found.LoadBalancers
+	return nets, nil
+}
+
+// Validator returns the validator of the operator: it judges what an instance is
+// going to program into the gateway against the networks of the cluster.
+//
+// A rejection is a RejectedError, whose text is for a tenant. Failing to learn
+// the networks of the cluster is not a rejection: the error wraps
+// reconcile.ErrValidationUnavailable, so that the pass leaves the routes as they
+// are until the cluster answers.
+func (s *Source) Validator() reconcile.Validator {
+	return func(ctx context.Context, in reconcile.Instance) error {
+		nets, err := s.Networks(ctx)
+		if err != nil {
+			return err
+		}
 		rejections, err := Validate(inputsOf(in), nets)
 		if err != nil {
 			return fmt.Errorf("%w: %w", reconcile.ErrValidationUnavailable, err)
@@ -58,7 +79,16 @@ func NewValidator(cfg Config, d *Discoverer) (reconcile.Validator, error) {
 			return &RejectedError{Rejections: rejections}
 		}
 		return nil
-	}, nil
+	}
+}
+
+// NewValidator returns the validator of a Source made of cfg and d.
+func NewValidator(cfg Config, d *Discoverer) (reconcile.Validator, error) {
+	s, err := NewSource(cfg, d)
+	if err != nil {
+		return nil, err
+	}
+	return s.Validator(), nil
 }
 
 // inputsOf collects every value of the instance that programs a route or opens a
