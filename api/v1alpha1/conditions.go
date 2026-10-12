@@ -32,8 +32,9 @@ const (
 // Reasons of a SiteRouter condition that is False, or informational.
 const (
 	// Validated.
-	ReasonInvalidRemoteCIDR = "InvalidRemoteCIDR"
-	ReasonPeerNotConfigured = "PeerNotConfigured"
+	ReasonInvalidRemoteCIDR     = "InvalidRemoteCIDR"
+	ReasonPeerNotConfigured     = "PeerNotConfigured"
+	ReasonValidationUnavailable = "ValidationUnavailable"
 
 	// GatewayReady.
 	ReasonGatewayPending       = "GatewayPending"

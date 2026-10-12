@@ -19,6 +19,7 @@ package reconcile_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -123,7 +124,7 @@ func (f fwd) WithdrawRoutes(context.Context, string) error {
 	return f.h.withdrawErr
 }
 
-func rejectDefaultRoute(in reconcile.Instance) error {
+func rejectDefaultRoute(_ context.Context, in reconcile.Instance) error {
 	for _, c := range in.RemoteCIDRs {
 		if strings.HasSuffix(c, "/0") {
 			return errors.New("remote CIDR " + c + " is a default route")
@@ -135,11 +136,11 @@ func rejectDefaultRoute(in reconcile.Instance) error {
 func newHarness(t *testing.T, e engine.Engine) *harness {
 	t.Helper()
 	h := &harness{}
-	validate := func(in reconcile.Instance) error {
+	validate := func(ctx context.Context, in reconcile.Instance) error {
 		if h.validateErr != nil {
 			return h.validateErr
 		}
-		return rejectDefaultRoute(in)
+		return rejectDefaultRoute(ctx, in)
 	}
 	s, err := reconcile.New(spy{e, h}, fwd{h}, validate)
 	if err != nil {
@@ -325,6 +326,45 @@ func TestInvalidInstanceNeverReachesEngine(t *testing.T) {
 			}
 			if got := res.Conditions[reconcile.CondValidated].Reason; got != reconcile.ReasonInvalidRemoteCIDR {
 				t.Errorf("reason = %q", got)
+			}
+		})
+	}
+}
+
+// A validator that cannot look is not a validator that refuses. Withdrawing the
+// routes of a tenant because the API of the cluster did not answer would turn a
+// hiccup into an outage, so the pass stops and leaves everything as it is.
+func TestAValidatorThatCannotJudgeLeavesTheRoutesAlone(t *testing.T) {
+	cause := errors.New("listing the nodes: Get https://10.0.0.1:6443/api/v1/nodes: connection refused with " + psk)
+	for _, r := range rigs() {
+		t.Run(r.name, func(t *testing.T) {
+			h := newHarness(t, r.eng)
+			h.validateErr = fmt.Errorf("%w: %w", reconcile.ErrValidationUnavailable, cause)
+			st := &reconcile.State{Revision: "kept"}
+			res := h.step(instance("10.244.1.5/32"), st)
+
+			if len(h.log) != 0 {
+				t.Errorf("calls = %v: nothing should reach the engine or the network", h.log)
+			}
+			if st.Revision != "kept" {
+				t.Errorf("the revision became %q: the engine was not contacted, so it must stay", st.Revision)
+			}
+			c := res.Conditions[reconcile.CondValidated]
+			if c.OK || c.Reason != reconcile.ReasonValidationUnavailable {
+				t.Errorf("Validated = %+v, want False and ValidationUnavailable", c)
+			}
+			if _, set := res.Conditions[reconcile.CondRoutesProgrammed]; set {
+				t.Error("RoutesProgrammed was set although the routes were not touched")
+			}
+			// The cause is for the log and the condition is for a tenant.
+			if strings.Contains(c.Message, "10.0.0.1") || strings.Contains(c.Message, "connection refused") {
+				t.Errorf("the condition carries the cause: %q", c.Message)
+			}
+			if res.Err == nil || !strings.Contains(res.Err.Error(), "connection refused") {
+				t.Errorf("Err = %v, want the cause, for the log", res.Err)
+			}
+			if res.Err != nil && strings.Contains(res.Err.Error(), psk) {
+				t.Errorf("Err leaks a secret: %v", res.Err)
 			}
 		})
 	}

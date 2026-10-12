@@ -43,9 +43,10 @@ const (
 // taken from it; the rest are what Step says while everything is fine, or a
 // stand-in for what the Forwarder API will report.
 const (
-	ReasonInvalidRemoteCIDR   = v1alpha1.ReasonInvalidRemoteCIDR
-	ReasonConfigureFailed     = v1alpha1.ReasonConfigureFailed
-	ReasonSourceFilterPending = v1alpha1.ReasonSourceFilterPending
+	ReasonInvalidRemoteCIDR     = v1alpha1.ReasonInvalidRemoteCIDR
+	ReasonValidationUnavailable = v1alpha1.ReasonValidationUnavailable
+	ReasonConfigureFailed       = v1alpha1.ReasonConfigureFailed
+	ReasonSourceFilterPending   = v1alpha1.ReasonSourceFilterPending
 
 	ReasonAccepted      = "Accepted"
 	ReasonConfigApplied = "ConfigApplied"
@@ -64,10 +65,20 @@ type Forwarder interface {
 }
 
 // Validator rejects an instance before anything reaches the engine or the
-// network. Its error becomes the Validated condition. Step applies in.Desired
-// to the engine and in.RemoteCIDRs to the network without checking them against
-// each other, so a validator has to vet both, not only the CIDR list.
-type Validator func(Instance) error
+// network. Its error becomes the Validated condition, and is for a tenant to
+// read. Step applies in.Desired to the engine and in.RemoteCIDRs to the network
+// without checking them against each other, so a validator has to vet both, not
+// only the CIDR list.
+//
+// An error that wraps ErrValidationUnavailable says the validator could not
+// judge, not that the instance is wrong.
+type Validator func(context.Context, Instance) error
+
+// ErrValidationUnavailable is wrapped by a Validator that cannot judge now, for
+// instance because the cluster does not answer. The instance is not refused: the
+// routes it has stay as they are, and nothing reaches the engine, until the
+// validator can judge again. A failure to look is no reason to break a tunnel.
+var ErrValidationUnavailable = errors.New("validation is not available")
 
 // Instance is the input of one pass for one gateway.
 type Instance struct {
@@ -92,6 +103,10 @@ type Condition struct {
 type Result struct {
 	Conditions map[string]Condition
 	Tunnels    map[string]engine.TunnelState
+	// Err is why the pass could not go on, for the log, where a condition says it
+	// in words for a tenant. It is redacted like a condition, and set only when
+	// the two differ.
+	Err error
 }
 
 // Stepper runs passes.
@@ -158,7 +173,14 @@ func (s *Stepper) Step(ctx context.Context, ep engine.Endpoint, in Instance, st 
 		return true
 	}
 
-	if err := s.validate(in); err != nil {
+	if err := s.validate(ctx, in); err != nil {
+		if errors.Is(err, ErrValidationUnavailable) {
+			// The text of the cause is for the log, not for a tenant: it can
+			// name the API server or what it failed on.
+			res.Err = errors.New(safe(err))
+			set(&res, CondValidated, false, ReasonValidationUnavailable, "the networks of the cluster could not be checked now; trying again")
+			return res
+		}
 		set(&res, CondValidated, false, ReasonInvalidRemoteCIDR, safe(err))
 		_ = withdraw()
 		return res
