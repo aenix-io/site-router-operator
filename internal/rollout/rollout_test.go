@@ -48,41 +48,60 @@ func cfg(policy config.UpgradePolicy) config.Config {
 	}
 }
 
+var (
+	d11 = digestOf(img11)
+	d10 = digestOf(img10)
+	// digestOld is a build of version 1.0 that is not the one that is listed.
+	digestOld = "sha256:" + "ab" + d10[9:]
+)
+
+func at(version, digest string) Current { return Current{Version: version, Digest: digest} }
+
 func TestDecide(t *testing.T) {
 	cases := []struct {
 		name       string
 		policy     config.UpgradePolicy
-		current    string
+		current    Current
 		annotation string
 		want       Decision
 	}{
 		// A gateway that is being made.
-		{"new, no annotation, auto", config.UpgradeAuto, "", "", Decision{Target: "1.1", Image: img11}},
-		{"new, no annotation, annotation policy", config.UpgradeAnnotation, "", "", Decision{Target: "1.1", Image: img11}},
-		{"new, with an annotation", config.UpgradeAnnotation, "", "1.0", Decision{Target: "1.0", Image: img10}},
-		{"new, with an annotation, auto", config.UpgradeAuto, "", "0.9", Decision{Target: "0.9", Image: img09}},
-		{"new, with an annotation that is not listed", config.UpgradeAnnotation, "", "9.9", Decision{Target: "1.1", Image: img11, Unsupported: "9.9"}},
+		{"new, no annotation, auto", config.UpgradeAuto, Current{}, "", Decision{Target: "1.1", Image: img11}},
+		{"new, no annotation, annotation policy", config.UpgradeAnnotation, Current{}, "", Decision{Target: "1.1", Image: img11}},
+		{"new, with an annotation", config.UpgradeAnnotation, Current{}, "1.0", Decision{Target: "1.0", Image: img10}},
+		{"new, with an annotation, auto", config.UpgradeAuto, Current{}, "0.9", Decision{Target: "0.9", Image: img09}},
+		{"new, with an annotation that is not listed", config.UpgradeAnnotation, Current{}, "9.9", Decision{Target: "1.1", Image: img11, Unsupported: "9.9"}},
 
 		// Annotation policy: nothing moves unless told to.
-		{"annotation policy leaves a gateway where it is", config.UpgradeAnnotation, "1.0", "", Decision{Target: "1.0", Image: img10}},
-		{"annotation policy: up", config.UpgradeAnnotation, "1.0", "1.1", Decision{Target: "1.1", Image: img11, Moving: true}},
-		{"annotation policy: down", config.UpgradeAnnotation, "1.1", "0.9", Decision{Target: "0.9", Image: img09, Moving: true}},
-		{"annotation policy: the same version", config.UpgradeAnnotation, "1.0", "1.0", Decision{Target: "1.0", Image: img10}},
-		{"annotation policy: a version that is not listed", config.UpgradeAnnotation, "1.0", "9.9", Decision{Target: "1.0", Image: img10, Unsupported: "9.9"}},
+		{"annotation policy leaves a gateway where it is", config.UpgradeAnnotation, at("1.0", d10), "", Decision{Target: "1.0", Image: img10}},
+		{"annotation policy: up", config.UpgradeAnnotation, at("1.0", d10), "1.1", Decision{Target: "1.1", Image: img11, Moving: true}},
+		{"annotation policy: down", config.UpgradeAnnotation, at("1.1", d11), "0.9", Decision{Target: "0.9", Image: img09, Moving: true}},
+		{"annotation policy: the same version", config.UpgradeAnnotation, at("1.0", d10), "1.0", Decision{Target: "1.0", Image: img10}},
+		{"annotation policy: a version that is not listed", config.UpgradeAnnotation, at("1.0", d10), "9.9", Decision{Target: "1.0", Image: img10, Unsupported: "9.9"}},
 
 		// Auto policy: every gateway goes to the latest, and an annotation keeps one
 		// where it is told.
-		{"auto policy moves a gateway to the latest", config.UpgradeAuto, "1.0", "", Decision{Target: "1.1", Image: img11, Moving: true}},
-		{"auto policy has nothing to do at the latest", config.UpgradeAuto, "1.1", "", Decision{Target: "1.1", Image: img11}},
-		{"auto policy: an annotation holds a gateway back", config.UpgradeAuto, "1.1", "1.0", Decision{Target: "1.0", Image: img10, Moving: true}},
-		{"auto policy: an annotation keeps a gateway where it is", config.UpgradeAuto, "1.0", "1.0", Decision{Target: "1.0", Image: img10}},
-		{"auto policy: a version that is not listed does not move it", config.UpgradeAuto, "1.0", "9.9", Decision{Target: "1.0", Image: img10, Unsupported: "9.9"}},
+		{"auto policy moves a gateway to the latest", config.UpgradeAuto, at("1.0", d10), "", Decision{Target: "1.1", Image: img11, Moving: true}},
+		{"auto policy has nothing to do at the latest", config.UpgradeAuto, at("1.1", d11), "", Decision{Target: "1.1", Image: img11}},
+		{"auto policy: an annotation holds a gateway back", config.UpgradeAuto, at("1.1", d11), "1.0", Decision{Target: "1.0", Image: img10, Moving: true}},
+		{"auto policy: an annotation keeps a gateway where it is", config.UpgradeAuto, at("1.0", d10), "1.0", Decision{Target: "1.0", Image: img10}},
+		{"auto policy: a version that is not listed does not move it", config.UpgradeAuto, at("1.0", d10), "9.9", Decision{Target: "1.0", Image: img10, Unsupported: "9.9"}},
+
+		// A new build of a version the gateway runs.
+		{"auto policy: a new build of the latest", config.UpgradeAuto, at("1.1", digestOld), "", Decision{Target: "1.1", Image: img11, Moving: true}},
+		{"annotation policy: a new build waits to be asked for", config.UpgradeAnnotation, at("1.0", digestOld), "",
+			Decision{Target: "1.0", Image: withDigest(img11, digestOld), Orphaned: true}},
+		{"annotation policy: a new build asked for", config.UpgradeAnnotation, at("1.0", digestOld), "1.0", Decision{Target: "1.0", Image: img10, Moving: true}},
+
+		// An image is its digest: two names for one image are not a move.
+		{"another name for the image it runs", config.UpgradeAuto, at("1.0", d11), "", Decision{Target: "1.1", Image: img11}},
 
 		// A version that is not listed any more.
-		{"orphaned, annotation policy", config.UpgradeAnnotation, "0.5", "", Decision{Target: "0.5", Orphaned: true}},
-		{"orphaned, auto policy goes to the latest", config.UpgradeAuto, "0.5", "", Decision{Target: "1.1", Image: img11, Moving: true}},
-		{"orphaned, told to move", config.UpgradeAnnotation, "0.5", "1.0", Decision{Target: "1.0", Image: img10, Moving: true}},
-		{"orphaned, told to move to what is not listed", config.UpgradeAnnotation, "0.5", "9.9", Decision{Target: "0.5", Orphaned: true, Unsupported: "9.9"}},
+		{"orphaned, annotation policy", config.UpgradeAnnotation, at("0.5", "sha256:cc"), "", Decision{Target: "0.5", Image: withDigest(img11, "sha256:cc"), Orphaned: true}},
+		{"orphaned, auto policy goes to the latest", config.UpgradeAuto, at("0.5", "sha256:cc"), "", Decision{Target: "1.1", Image: img11, Moving: true}},
+		{"orphaned, told to move", config.UpgradeAnnotation, at("0.5", "sha256:cc"), "1.0", Decision{Target: "1.0", Image: img10, Moving: true}},
+		{"orphaned, told to move to what is not listed", config.UpgradeAnnotation, at("0.5", "sha256:cc"), "9.9",
+			Decision{Target: "0.5", Image: withDigest(img11, "sha256:cc"), Orphaned: true, Unsupported: "9.9"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -91,7 +110,7 @@ func TestDecide(t *testing.T) {
 				t.Fatal(err)
 			}
 			if got != c.want {
-				t.Errorf("Decide(%q, %q) = %+v, want %+v", c.current, c.annotation, got, c.want)
+				t.Errorf("Decide(%+v, %q) = %+v, want %+v", c.current, c.annotation, got, c.want)
 			}
 		})
 	}
@@ -100,7 +119,7 @@ func TestDecide(t *testing.T) {
 func TestDecideRefusesAConfigurationThatWasNotChecked(t *testing.T) {
 	c := cfg(config.UpgradeAuto)
 	c.Engine.Latest = "7.7"
-	if _, err := Decide(c, "1.0", ""); err == nil {
+	if _, err := Decide(c, at("1.0", d10), ""); err == nil {
 		t.Error("a decision was made with a latest version that is not listed")
 	}
 }

@@ -25,6 +25,7 @@ package rollout
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"k8s.io/apimachinery/pkg/types"
@@ -32,32 +33,44 @@ import (
 	"github.com/aenix-io/site-router-operator/internal/config"
 )
 
+// Current is the image a gateway runs: the name of its version and the digest of
+// its disk. Both, because the same version can be rebuilt, and a new build of a
+// version the engine can already drive is meant to reach the gateways. The zero
+// Current is a gateway that is being made.
+type Current struct {
+	Version string
+	Digest  string
+}
+
 // Decision is the version a gateway is to run.
 type Decision struct {
 	// Target is the version the gateway is to run, and Image its image.
 	Target string
 	Image  string
-	// Moving is true when the gateway runs another version now.
+	// Moving is true when the gateway is to run another image than it does now. An
+	// image is its digest: another version name for the same image is not a move,
+	// the disk is the one it has, and another build of the same version is.
 	Moving bool
 	// Unsupported says why the version that was asked for is not the target, when
 	// it is not: the annotation names a version the operator does not list. The
 	// gateway stays where it is.
 	Unsupported string
-	// Orphaned is true when the version the gateway runs is not listed any more.
-	// It is left as it is, and there is no image to make a disk from, so it
-	// cannot be moved back to; the operator still manages it.
+	// Orphaned is true when the image the gateway runs is not the one the operator
+	// lists for its version, or its version is not listed at all. It is left as it
+	// is. Its Image is the repository of the latest with its own digest, which is
+	// enough to name its disk and not to make one.
 	Orphaned bool
 }
 
-// Decide returns the version a gateway is to run, from the version it runs now
-// (empty for one that is being made), the annotation on its SiteRouter (empty for
-// none) and the configuration.
+// Decide returns the version a gateway is to run, from the image it runs now, the
+// annotation on its SiteRouter (empty for none) and the configuration.
 //
 // In either policy an annotation that names a listed version decides, up or down,
-// and keeps the gateway there. Without one, auto policy moves the gateway to the
-// latest version and annotation policy leaves it where it is, and a gateway that
-// is being made is made with the latest.
-func Decide(cfg config.Config, current, annotation string) (Decision, error) {
+// and keeps the gateway there; when it names the version the gateway runs and the
+// operator lists another build of it, that is a move to the build. Without an
+// annotation, auto policy moves the gateway to the latest and annotation policy
+// leaves it where it is, and a gateway that is being made is made with the latest.
+func Decide(cfg config.Config, cur Current, annotation string) (Decision, error) {
 	latestImage, ok := cfg.Engine.Image(cfg.Engine.Latest)
 	if !ok {
 		return Decision{}, fmt.Errorf("the latest version %q is not listed: the configuration was not checked", cfg.Engine.Latest)
@@ -65,7 +78,7 @@ func Decide(cfg config.Config, current, annotation string) (Decision, error) {
 	latest := Decision{Target: cfg.Engine.Latest, Image: latestImage}
 
 	// A gateway that is being made has nothing to stay at.
-	if current == "" {
+	if cur.Version == "" {
 		if annotation != "" {
 			if img, ok := cfg.Engine.Image(annotation); ok {
 				return Decision{Target: annotation, Image: img}, nil
@@ -75,26 +88,53 @@ func Decide(cfg config.Config, current, annotation string) (Decision, error) {
 		return latest, nil
 	}
 
-	currentImage, listed := cfg.Engine.Image(current)
-	stay := Decision{Target: current, Image: currentImage, Orphaned: !listed}
+	stay := Decision{Target: cur.Version}
+	listedImage, listed := cfg.Engine.Image(cur.Version)
+	switch {
+	case listed && digestOf(listedImage) == cur.Digest:
+		stay.Image = listedImage
+	default:
+		// What runs is not what is listed under its name, or is not listed. The
+		// repository of the latest stands in for its own.
+		stay.Image = withDigest(latestImage, cur.Digest)
+		stay.Orphaned = true
+	}
+
+	target := func(name string) (Decision, bool) {
+		img, ok := cfg.Engine.Image(name)
+		if !ok {
+			return Decision{}, false
+		}
+		d := Decision{Target: name, Image: img}
+		d.Moving = digestOf(img) != cur.Digest
+		return d, true
+	}
 
 	if annotation != "" {
-		img, ok := cfg.Engine.Image(annotation)
+		d, ok := target(annotation)
 		if !ok {
 			stay.Unsupported = annotation
 			return stay, nil
 		}
-		return move(Decision{Target: annotation, Image: img}, current), nil
+		return d, nil
 	}
 	if cfg.Upgrade.Policy == config.UpgradeAuto {
-		return move(latest, current), nil
+		d, _ := target(cfg.Engine.Latest)
+		return d, nil
 	}
 	return stay, nil
 }
 
-func move(d Decision, current string) Decision {
-	d.Moving = d.Target != current
+// digestOf is the digest an image is pinned by, or "" when it has none.
+func digestOf(image string) string {
+	_, d, _ := strings.Cut(image, "@")
 	return d
+}
+
+// withDigest is the image with the digest given in place of its own.
+func withDigest(image, digest string) string {
+	repo, _, _ := strings.Cut(image, "@")
+	return repo + "@" + digest
 }
 
 // Gate bounds how many gateways move at once. It is a count of the gateways
