@@ -22,10 +22,12 @@ type: Opaque
 apiVersion: v1
 kind: Secret
 metadata:
+  annotations:
+    siterouter.aenix.io/image-digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   labels:
     app.kubernetes.io/managed-by: site-router-operator
     siterouter.aenix.io/instance: branch-office
-  name: site-router-branch-office-cloud-init
+  name: site-router-branch-office-seed-0123
   namespace: tenant-a
   ownerReferences:
   - apiVersion: siterouter.aenix.io/v1alpha1
@@ -61,10 +63,12 @@ type: Opaque
 apiVersion: cdi.kubevirt.io/v1beta1
 kind: DataVolume
 metadata:
+  annotations:
+    siterouter.aenix.io/image-digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   labels:
     app.kubernetes.io/managed-by: site-router-operator
     siterouter.aenix.io/instance: branch-office
-  name: site-router-branch-office-boot
+  name: site-router-branch-office-boot-0123
   namespace: tenant-a
   ownerReferences:
   - apiVersion: siterouter.aenix.io/v1alpha1
@@ -142,11 +146,11 @@ spec:
       terminationGracePeriodSeconds: 30
       volumes:
       - dataVolume:
-          name: site-router-branch-office-boot
+          name: site-router-branch-office-boot-0123
         name: boot
       - cloudInitNoCloud:
           secretRef:
-            name: site-router-branch-office-cloud-init
+            name: site-router-branch-office-seed-0123
         name: cloudinitdisk
 ---
 apiVersion: v1

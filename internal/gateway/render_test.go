@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/aenix-io/site-router-operator/api/engine"
 	"github.com/aenix-io/site-router-operator/api/v1alpha1"
@@ -106,7 +107,7 @@ func TestRenderLeavesItsInputAlone(t *testing.T) {
 	// What is rendered must not alias what was passed in: a controller that
 	// keeps the plan across passes would otherwise see it change under it.
 	secretOf(t, objs, NamesFor(in.Instance.Name).APIKey).Data["token"][0] ^= 0xff
-	secretOf(t, objs, NamesFor(in.Instance.Name).CloudInit).Data[engine.SeedUserData][0] ^= 0xff
+	secretOf(t, objs, NamesFor(in.Instance.Name).ForImage(in.Image).CloudInit).Data[engine.SeedUserData][0] ^= 0xff
 
 	if !reflect.DeepEqual(in.Plan, before.Plan) {
 		t.Error("Render changed the plan it was given")
@@ -135,8 +136,72 @@ func TestRenderOrderIsTheOrderOfCreation(t *testing.T) {
 	}
 }
 
+// The disk and the seed are named after the image, so that a gateway that moves
+// to another one gets new ones beside the old, which are never changed.
+func TestTheDiskAndTheSeedAreNamedAfterTheImage(t *testing.T) {
+	names := NamesFor("branch-office").ForImage(testImage)
+	if names.BootDisk != "site-router-branch-office-boot-0123" || names.CloudInit != "site-router-branch-office-seed-0123" {
+		t.Errorf("names = %q and %q, want the first four characters of the digest in both", names.BootDisk, names.CloudInit)
+	}
+	objs := mustRender(t, newInput())
+	for _, name := range []string{names.BootDisk, names.CloudInit} {
+		var o client.Object
+		for _, x := range objs {
+			if x.GetName() == name {
+				o = x
+			}
+		}
+		if o == nil {
+			t.Fatalf("no object named %s", name)
+		}
+		if got := o.GetAnnotations()[v1alpha1.AnnotationImageDigest]; got != testDigest {
+			t.Errorf("%s is marked %q, want the digest of the image, %q", name, got, testDigest)
+		}
+	}
+
+	other := newInput(func(in *Input) {
+		in.Image = "registry.example/appliances/gateway-disk:2.0@sha256:fedc" + strings.Repeat("0", 60)
+	})
+	moved := NamesFor("branch-office").ForImage(other.Image)
+	if moved.BootDisk == names.BootDisk || moved.CloudInit == names.CloudInit {
+		t.Error("another image has the same disk and seed")
+	}
+	rendered := mustRender(t, other)
+	if find(t, rendered, "DataVolume", moved.BootDisk) == nil || find(t, rendered, "Secret", moved.CloudInit) == nil {
+		t.Error("the objects of another image are not named after it")
+	}
+}
+
+func TestNamesStayWithinWhatTheyMayBe(t *testing.T) {
+	longest := strings.Repeat("a", 40)
+	n := NamesFor(longest).ForImage(testImage)
+	for _, name := range []string{n.VM, n.BootDisk, n.CloudInit, n.Tunnel} {
+		if len(name) > 63 {
+			t.Errorf("%q is %d characters, more than the 63 a name may have where it becomes a label value or a host name", name, len(name))
+		}
+	}
+	if len(n.BootDisk) != 62 {
+		t.Errorf("the boot disk is %d characters with the longest name, want 62", len(n.BootDisk))
+	}
+}
+
+func TestImageDigest(t *testing.T) {
+	if got, err := ImageDigest(testImage); err != nil || got != testDigest {
+		t.Errorf("ImageDigest = %q, %v, want %q", got, err, testDigest)
+	}
+	if _, err := ImageDigest("registry.example/disk:1.0"); err == nil {
+		t.Error("an image with no digest has one")
+	}
+	if got := shortDigest("x"); got != "" {
+		t.Errorf("shortDigest of an image with no digest = %q", got)
+	}
+	if got := shortDigest("x@sha256:ab"); got != "" {
+		t.Errorf("shortDigest of a digest that is too short = %q", got)
+	}
+}
+
 func TestPSKSecretIsTheOperatorsOnlyWhenNoneIsNamed(t *testing.T) {
-	names := NamesFor("branch-office")
+	names := NamesFor("branch-office").ForImage(testImage)
 	own := mustRender(t, newInput())
 	if string(secretOf(t, own, names.PSK).Data["psk"]) != "psk-0123456789abcdefghijklmnopqrstuv" {
 		t.Error("the Secret with the pre-shared key does not hold the key that was passed in")
@@ -174,7 +239,7 @@ func TestManagementPortComesFromThePlan(t *testing.T) {
 }
 
 func TestStorageClassOfTheSiteRouterWinsOverThePlatforms(t *testing.T) {
-	names := NamesFor("branch-office")
+	names := NamesFor("branch-office").ForImage(testImage)
 	for name, c := range map[string]struct{ spec, platform, want string }{
 		"both":          {"fast", "replicated", "fast"},
 		"platform only": {"", "replicated", "replicated"},

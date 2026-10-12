@@ -69,6 +69,17 @@ func (e *NotOwnedError) Error() string {
 	return fmt.Sprintf("%s %s exists and is not controlled by this SiteRouter: it was not made by the operator, and the operator does not take it over", e.Kind, e.Name)
 }
 
+// ImageMismatchError is returned when a boot disk or a seed of the name that is
+// meant exists and was made for another image. The name has four characters of
+// the digest in it, so two images can share one, and a gateway must not boot
+// from the disk of another.
+type ImageMismatchError struct{ Kind, Name, Existing, Wanted string }
+
+func (e *ImageMismatchError) Error() string {
+	return fmt.Sprintf("%s %s exists and was made for the image %q, not for %q: the two share the first characters of their digest, and the operator does not take the one for the other",
+		e.Kind, e.Name, e.Existing, e.Wanted)
+}
+
 // LoadBalancerClassError is returned when the class asked for is not the class
 // of the Service of the tunnel that exists.
 type LoadBalancerClassError struct{ Service, Existing, Requested string }
@@ -102,6 +113,11 @@ func (a *Applier) apply(ctx context.Context, sr *v1alpha1.SiteRouter, o client.O
 	switch gvk.Kind {
 	case "Secret", DataVolumeGVK.Kind:
 		if existing != nil {
+			if want := o.GetAnnotations()[v1alpha1.AnnotationImageDigest]; want != "" {
+				if have := existing.GetAnnotations()[v1alpha1.AnnotationImageDigest]; have != want {
+					return &ImageMismatchError{Kind: gvk.Kind, Name: o.GetName(), Existing: have, Wanted: want}
+				}
+			}
 			return nil
 		}
 		return a.Client.Create(ctx, o.DeepCopyObject().(client.Object))

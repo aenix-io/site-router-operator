@@ -39,4 +39,10 @@ const (
 	// version that is not listed by the operator is not run, and the gateway
 	// stays as it is.
 	AnnotationUpgradeTo = "siterouter.aenix.io/upgrade-to"
+
+	// AnnotationImageDigest is set by the operator on the boot disk and on the
+	// seed of a gateway, with the digest of the image they were made for. They are
+	// named after the first characters of it, and the whole is what says that an
+	// object of that name is the one that is meant.
+	AnnotationImageDigest = "siterouter.aenix.io/image-digest"
 )

@@ -52,7 +52,7 @@ func TestAssertInvariantsAcceptsWhatRenderReturns(t *testing.T) {
 }
 
 func TestAssertInvariantsSeesWhatIsBroken(t *testing.T) {
-	names := NamesFor("branch-office")
+	names := NamesFor("branch-office").ForImage(testImage)
 	vmPath := func(p ...string) []string { return append([]string{"spec", "template"}, p...) }
 	set := func(u *unstructured.Unstructured, v any, path ...string) {
 		if err := unstructured.SetNestedField(u.Object, v, path...); err != nil {
@@ -248,6 +248,23 @@ func TestAssertInvariantsSeesWhatIsBroken(t *testing.T) {
 			return o
 		}, `asks for "10Gi"`},
 
+		{"a disk that does not say which image it is for", func(t *testing.T, o []client.Object) []client.Object {
+			unstructured.RemoveNestedField(dv(t, o).Object, "metadata", "annotations", v1alpha1.AnnotationImageDigest)
+			return o
+		}, "is marked as made for the image"},
+		{"a disk made for another image", func(t *testing.T, o []client.Object) []client.Object {
+			set(dv(t, o), "sha256:"+strings.Repeat("a", 64), "metadata", "annotations", v1alpha1.AnnotationImageDigest)
+			return o
+		}, "is marked as made for the image"},
+		{"a seed that does not say which image it is for", func(t *testing.T, o []client.Object) []client.Object {
+			delete(secretOf(t, o, names.CloudInit).Annotations, v1alpha1.AnnotationImageDigest)
+			return o
+		}, "is marked as made for the image"},
+		{"a seed made for another image", func(t *testing.T, o []client.Object) []client.Object {
+			secretOf(t, o, names.CloudInit).Annotations[v1alpha1.AnnotationImageDigest] = "sha256:" + strings.Repeat("b", 64)
+			return o
+		}, "is marked as made for the image"},
+
 		// The Service.
 		{"a service that is not a load balancer", func(t *testing.T, o []client.Object) []client.Object {
 			svc(t, o).Spec.Type = corev1.ServiceTypeClusterIP
@@ -425,7 +442,7 @@ func TestAssertInvariantsSeesWhatIsBroken(t *testing.T) {
 func TestAssertInvariantsReportsEveryViolation(t *testing.T) {
 	in := newInput()
 	objs := mustRender(t, in)
-	names := NamesFor("branch-office")
+	names := NamesFor("branch-office").ForImage(testImage)
 	svc := find(t, objs, "Service", names.Tunnel).(*corev1.Service)
 	svc.Spec.Type = corev1.ServiceTypeClusterIP
 	svc.Spec.ExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyCluster

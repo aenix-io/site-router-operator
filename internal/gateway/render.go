@@ -103,7 +103,7 @@ func Render(in Input) ([]client.Object, error) {
 	if err := in.check(); err != nil {
 		return nil, err
 	}
-	r := renderer{in: in, names: NamesFor(in.Instance.Name)}
+	r := renderer{in: in, names: NamesFor(in.Instance.Name).ForImage(in.Image)}
 
 	url, err := registryURL(in.Image)
 	if err != nil {
@@ -248,12 +248,27 @@ func (r renderer) secret(name string, data map[string][]byte) *corev1.Secret {
 	}
 }
 
+// forImage marks an object as made for the image of the gateway.
+func (r renderer) forImage(o interface {
+	GetAnnotations() map[string]string
+	SetAnnotations(map[string]string)
+}) {
+	a := o.GetAnnotations()
+	if a == nil {
+		a = map[string]string{}
+	}
+	a[v1alpha1.AnnotationImageDigest], _ = ImageDigest(r.in.Image)
+	o.SetAnnotations(a)
+}
+
 func (r renderer) apiKeySecret() *corev1.Secret {
 	return r.secret(r.names.APIKey, r.in.Plan.Credentials)
 }
 
 func (r renderer) cloudInitSecret() *corev1.Secret {
-	return r.secret(r.names.CloudInit, r.in.Plan.SeedFiles)
+	s := r.secret(r.names.CloudInit, r.in.Plan.SeedFiles)
+	r.forImage(s)
+	return s
 }
 
 func (r renderer) pskSecret() *corev1.Secret {
@@ -288,11 +303,13 @@ func (r renderer) dataVolume(url string) *unstructured.Unstructured {
 	if class := r.storageClass(); class != "" {
 		storage["storageClassName"] = class
 	}
-	return r.unstructured(DataVolumeGVK, r.names.BootDisk, map[string]any{
+	disk := r.unstructured(DataVolumeGVK, r.names.BootDisk, map[string]any{
 		"contentType": "kubevirt",
 		"source":      map[string]any{"registry": registry},
 		"storage":     storage,
 	})
+	r.forImage(disk)
+	return disk
 }
 
 // storageClass is the one the SiteRouter asks for, else the one of the platform.
