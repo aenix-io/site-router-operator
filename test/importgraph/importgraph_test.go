@@ -39,6 +39,9 @@ var forbidden = []string{
 	"lineage",
 	"vyos",
 	"barerouter",
+	// Fakes and the conformance suite are for tests. Production code must not
+	// reach an engine implementation, not even a fake.
+	"enginetest",
 }
 
 // violations returns the import paths in deps that contain a forbidden substring.
