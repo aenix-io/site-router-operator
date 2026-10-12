@@ -160,6 +160,46 @@ func redact(text string, secrets []string) string {
 	return text
 }
 
+// Judge runs the first stage of a pass and no other: whether the instance may be
+// configured at all. A gateway that is not up yet has nothing to configure, and
+// a tenant whose networks are refused is told so at once, not when the VM has
+// booted. It sets the Validated condition, and takes the routes away when the
+// instance is refused, as Step does.
+func (s *Stepper) Judge(ctx context.Context, in Instance) Result {
+	res := Result{Conditions: map[string]Condition{}}
+	secrets := in.Desired.Secrets()
+	s.judge(ctx, in, &res, func(err error) string { return redact(err.Error(), secrets) })
+	return res
+}
+
+// judge runs the validation stage into res, and says whether the pass goes on.
+func (s *Stepper) judge(ctx context.Context, in Instance, res *Result, safe func(error) string) bool {
+	if in.Routes == nil {
+		// A fault of the caller, not of the tenant, so it is for the log; but
+		// nothing can be said to be programmed either.
+		res.Err = errors.New("reconcile: the instance has no Routes")
+		set(res, CondRoutesProgrammed, false, ReasonRoutesFailed, "no network is set up to carry routes for this instance")
+		return false
+	}
+	err := s.validate(ctx, in)
+	switch {
+	case err == nil:
+		set(res, CondValidated, true, ReasonAccepted, "")
+		return true
+	case errors.Is(err, ErrValidationUnavailable):
+		// The text of the cause is for the log, not for a tenant: it can name the
+		// API server or what it failed on.
+		res.Err = errors.New(safe(err))
+		set(res, CondValidated, false, ReasonValidationUnavailable, "the networks of the cluster could not be checked now; trying again")
+		return false
+	}
+	set(res, CondValidated, false, ReasonInvalidRemoteCIDR, safe(err))
+	if werr := in.Routes.Withdraw(ctx); werr != nil {
+		set(res, CondRoutesProgrammed, false, ReasonRoutesFailed, "withdrawing routes: "+safe(werr))
+	}
+	return false
+}
+
 // Step runs one pass in the order the design needs:
 //
 //	validate -> connect -> apply -> confirm -> routes -> observe
@@ -174,15 +214,11 @@ func redact(text string, secrets []string) string {
 // the tenant's traffic.
 func (s *Stepper) Step(ctx context.Context, ep engine.Endpoint, in Instance, st *State) Result {
 	res := Result{Conditions: map[string]Condition{}}
-	if in.Routes == nil {
-		// A fault of the caller, not of the tenant, so it is for the log; but
-		// nothing can be said to be programmed either.
-		res.Err = errors.New("reconcile: the instance has no Routes")
-		set(&res, CondRoutesProgrammed, false, ReasonRoutesFailed, "no network is set up to carry routes for this instance")
-		return res
-	}
 	secrets := append(in.Desired.Secrets(), ep.Secrets()...)
 	safe := func(err error) string { return redact(err.Error(), secrets) }
+	if !s.judge(ctx, in, &res, safe) {
+		return res
+	}
 	// withdraw takes the routes away and records a failure to do so.
 	withdraw := func() bool {
 		if werr := in.Routes.Withdraw(ctx); werr != nil {
@@ -191,20 +227,6 @@ func (s *Stepper) Step(ctx context.Context, ep engine.Endpoint, in Instance, st 
 		}
 		return true
 	}
-
-	if err := s.validate(ctx, in); err != nil {
-		if errors.Is(err, ErrValidationUnavailable) {
-			// The text of the cause is for the log, not for a tenant: it can
-			// name the API server or what it failed on.
-			res.Err = errors.New(safe(err))
-			set(&res, CondValidated, false, ReasonValidationUnavailable, "the networks of the cluster could not be checked now; trying again")
-			return res
-		}
-		set(&res, CondValidated, false, ReasonInvalidRemoteCIDR, safe(err))
-		_ = withdraw()
-		return res
-	}
-	set(&res, CondValidated, true, ReasonAccepted, "")
 
 	sess, err := s.engine.Connect(ep)
 	if err != nil {

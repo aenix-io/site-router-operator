@@ -382,6 +382,74 @@ func TestAValidatorThatCannotJudgeLeavesTheRoutesAlone(t *testing.T) {
 	}
 }
 
+// Judge is the first stage of a pass and nothing else: a gateway that is not up
+// has nothing to configure, and a tenant whose networks are refused is told so
+// before the VM has booted.
+func TestJudgeIsTheValidationStageAlone(t *testing.T) {
+	judge := func(h *harness, in reconcile.Instance) reconcile.Result {
+		if in.Routes == nil {
+			in.Routes = routes{h}
+		}
+		return h.stepper.Judge(context.Background(), in)
+	}
+
+	t.Run("an instance that is fine", func(t *testing.T) {
+		h := newHarness(t, rigs()[0].eng)
+		res := judge(h, instance("10.244.1.5/32"))
+		if c := res.Conditions[reconcile.CondValidated]; !c.OK || c.Reason != reconcile.ReasonAccepted {
+			t.Errorf("Validated = %+v", c)
+		}
+		if len(res.Conditions) != 1 || len(h.log) != 0 {
+			t.Errorf("conditions = %v and calls = %v, want the verdict alone and nothing called", res.Conditions, h.log)
+		}
+	})
+
+	t.Run("an instance that is refused loses its routes", func(t *testing.T) {
+		h := newHarness(t, rigs()[0].eng)
+		in := instance("10.244.1.5/32")
+		in.RemoteCIDRs = []string{"0.0.0.0/0"}
+		res := judge(h, in)
+		if c := res.Conditions[reconcile.CondValidated]; c.OK || c.Reason != reconcile.ReasonInvalidRemoteCIDR {
+			t.Errorf("Validated = %+v", c)
+		}
+		if !slices.Equal(h.log, []string{"withdraw"}) {
+			t.Errorf("calls = %v, want only a withdrawal", h.log)
+		}
+	})
+
+	t.Run("a refusal whose routes cannot be taken away says so", func(t *testing.T) {
+		h := newHarness(t, rigs()[0].eng)
+		h.withdrawErr = errors.New("the connector is down, token " + psk)
+		in := instance("10.244.1.5/32")
+		in.RemoteCIDRs = []string{"0.0.0.0/0"}
+		res := judge(h, in)
+		c := res.Conditions[reconcile.CondRoutesProgrammed]
+		if c.OK || c.Reason != reconcile.ReasonRoutesFailed || strings.Contains(c.Message, psk) || !strings.Contains(c.Message, "***") {
+			t.Errorf("RoutesProgrammed = %+v, want a failure with the secret redacted", c)
+		}
+	})
+
+	t.Run("a verdict that cannot be given leaves the routes", func(t *testing.T) {
+		h := newHarness(t, rigs()[0].eng)
+		h.validateErr = fmt.Errorf("%w: the API is down", reconcile.ErrValidationUnavailable)
+		res := judge(h, instance("10.244.1.5/32"))
+		if c := res.Conditions[reconcile.CondValidated]; c.OK || c.Reason != reconcile.ReasonValidationUnavailable {
+			t.Errorf("Validated = %+v", c)
+		}
+		if len(h.log) != 0 || res.Err == nil {
+			t.Errorf("calls = %v, Err = %v; want nothing called and the cause for the log", h.log, res.Err)
+		}
+	})
+
+	t.Run("an instance with no Routes", func(t *testing.T) {
+		h := newHarness(t, rigs()[0].eng)
+		res := h.stepper.Judge(context.Background(), instance("10.244.1.5/32"))
+		if res.Err == nil || res.Conditions[reconcile.CondRoutesProgrammed].OK {
+			t.Errorf("result = %+v", res)
+		}
+	})
+}
+
 func TestWithdrawFailureIsReported(t *testing.T) {
 	h := newHarness(t, rigs()[0].eng)
 	h.withdrawErr = errors.New("connector is down")
