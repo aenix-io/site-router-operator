@@ -28,27 +28,31 @@ import (
 	"strings"
 
 	"github.com/aenix-io/site-router-operator/api/engine"
+	"github.com/aenix-io/site-router-operator/api/v1alpha1"
 )
 
-// Condition types set by Step.
+// Condition types set by Step: the ones of the SiteRouter API.
 const (
-	CondValidated         = "Validated"
-	CondConfigured        = "Configured"
-	CondRoutesProgrammed  = "RoutesProgrammed"
-	CondTunnelEstablished = "TunnelEstablished"
+	CondValidated         = v1alpha1.ConditionValidated
+	CondConfigured        = v1alpha1.ConditionConfigured
+	CondRoutesProgrammed  = v1alpha1.ConditionRoutesProgrammed
+	CondTunnelEstablished = v1alpha1.ConditionTunnelEstablished
 )
 
-// Condition reasons set by Step.
+// Condition reasons set by Step. Those that are False reasons of the API are
+// taken from it; the rest are what Step says while everything is fine, or a
+// stand-in for what the Forwarder API will report.
 const (
-	ReasonAccepted            = "Accepted"
-	ReasonInvalidRemoteCIDR   = "InvalidRemoteCIDR"
-	ReasonConfigApplied       = "ConfigApplied"
-	ReasonConfigureFailed     = "ConfigureFailed"
-	ReasonSourceFilterPending = "SourceFilterPending"
-	ReasonProgrammed          = "Programmed"
-	ReasonRoutesFailed        = "RoutesFailed"
-	ReasonObserved            = "Observed"
-	ReasonObserveFailed       = "ObserveFailed"
+	ReasonInvalidRemoteCIDR   = v1alpha1.ReasonInvalidRemoteCIDR
+	ReasonConfigureFailed     = v1alpha1.ReasonConfigureFailed
+	ReasonSourceFilterPending = v1alpha1.ReasonSourceFilterPending
+
+	ReasonAccepted      = "Accepted"
+	ReasonConfigApplied = "ConfigApplied"
+	ReasonProgrammed    = "Programmed"
+	ReasonRoutesFailed  = "RoutesFailed"
+	ReasonObserved      = "Observed"
+	ReasonObserveFailed = "ObserveFailed"
 )
 
 // Forwarder is what Step needs from the network seam: routes for the remote
