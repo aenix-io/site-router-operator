@@ -1,35 +1,42 @@
-# Build the manager binary
-# Override BASE_IMAGE to build from another registry, e.g. docker.io/library/golang:1.27
+# Override BASE_IMAGE to build from another registry, e.g. docker.io/library/golang:1.27,
+# and RUNTIME_IMAGE to take the base of the image from a mirror.
 ARG BASE_IMAGE=golang:1.27
-FROM ${BASE_IMAGE} AS builder
+ARG RUNTIME_IMAGE=gcr.io/distroless/static:nonroot
+
+# The builder runs on the platform of the machine that builds and cross-compiles
+# the manager for the platform of the image, so that an image for another
+# architecture is built without emulating it: nothing is run in the stage of the
+# target platform.
+FROM --platform=$BUILDPLATFORM ${BASE_IMAGE} AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
 WORKDIR /workspace
-# Copy the Go Modules manifests. The api module is a replace target of the root
-# module, so its go.mod has to be present before the dependencies are downloaded.
-COPY go.mod go.mod
-COPY go.sum go.sum
-COPY api/go.* api/
-# cache deps before building and copying source so that we don't need to re-download as much
-# and so that source changes don't invalidate our downloaded layer
+# The module files come first, so that the download is a layer that a change of
+# the source does not invalidate. The api module is a replace target of the root
+# module, so its go.mod has to be present before the download. The engines the
+# operator is built with are modules like any other and are downloaded here.
+COPY go.mod go.sum ./
+COPY api/go.mod api/go.sum api/
 RUN go mod download
 
 # Copy the Go source (relies on .dockerignore to filter)
 COPY . .
 
-# Build
-# the GOARCH has no default value to allow the binary to be built according to the host where the command
-# was called. For example, if we call make docker-build in a local env which has the Apple Silicon M1 SO
-# the docker BUILDPLATFORM arg will be linux/arm64 when for Apple x86 it will be linux/amd64. Therefore,
-# by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager ./cmd
+# The whole package is built, not main.go alone: cmd/engines.go is where the
+# engines are imported. TARGETOS and TARGETARCH are set by BuildKit; left empty,
+# GOARCH builds for the platform of the builder.
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/manager ./cmd
 
-# Use distroless as minimal base image to package the manager binary
-# Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:nonroot
-WORKDIR /
-COPY --from=builder /workspace/manager .
+# distroless/static has no shell and no package manager, and nothing in it is
+# written to at run time, so the root filesystem can be mounted read-only.
+FROM ${RUNTIME_IMAGE}
+LABEL org.opencontainers.image.source="https://github.com/aenix-io/site-router-operator" \
+      org.opencontainers.image.licenses="Apache-2.0"
+COPY --from=builder /out/manager /manager
+# A numeric user: the kubelet can only check runAsNonRoot against a number.
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]
