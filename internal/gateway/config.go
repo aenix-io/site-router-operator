@@ -57,6 +57,12 @@ type VMConfig struct {
 	Affinity          *corev1.Affinity    `json:"affinity,omitempty"`
 	PriorityClassName string              `json:"priorityClassName,omitempty"`
 	RuntimeClassName  string              `json:"runtimeClassName,omitempty"`
+	// LogSerialConsole has KubeVirt write the console of the guest to a container
+	// beside the pod. A gateway that boots and never answers its management API
+	// shows nothing to the cluster, and the console is the one channel into it that
+	// does not go through that API. It overrides a platform that turns the console
+	// log off for every VM, which is why it is off unless asked for.
+	LogSerialConsole bool `json:"logSerialConsole,omitempty"`
 }
 
 // DataVolumeConfig is how the boot disk is stored and imported.
