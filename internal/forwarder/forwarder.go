@@ -155,6 +155,28 @@ func (r *Routes) Withdraw(ctx context.Context) error {
 	return r.apply(ctx, nil, r.m.now())
 }
 
+// Withdrawn says whether the networks have been taken away and the connector has
+// acted on it, so that nothing is routed to a gateway that is about to go. It is
+// true when there is no Forwarder, when the connector has seen the empty request
+// and answers that nothing is granted or programmed, and when no connector has
+// answered for as long as one is waited for, since a cluster that has none must
+// not hold a SiteRouter in deletion for ever. It is false while the Forwarder
+// still asks for networks, so it does not withdraw them itself.
+func (r *Routes) Withdrawn(ctx context.Context) (bool, error) {
+	f, err := r.get(ctx)
+	if err != nil || f == nil {
+		return true, err
+	}
+	if len(f.Spec.CIDRs) > 0 {
+		return false, nil
+	}
+	if seen(f) {
+		return !meta.IsStatusConditionTrue(f.Status.Conditions, v1alpha1.ForwarderGranted) &&
+			!meta.IsStatusConditionTrue(f.Status.Conditions, v1alpha1.ForwarderRoutesProgrammed), nil
+	}
+	return r.m.now().Sub(r.requestedAt(f)) > r.m.notResponding(), nil
+}
+
 // get returns the Forwarder of the SiteRouter, or nil when there is none. One
 // that the SiteRouter does not control is not its own and is refused.
 func (r *Routes) get(ctx context.Context) (*v1alpha1.Forwarder, error) {

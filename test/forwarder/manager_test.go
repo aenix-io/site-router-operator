@@ -413,6 +413,122 @@ func TestWithdrawWhenThereIsNothingToWithdrawWritesNothing(t *testing.T) {
 	}
 }
 
+// A SiteRouter that is being deleted waits until its routes are gone, and does
+// not wait for ever for a connector that is not there.
+func TestWithdrawnSaysWhenTheRoutesAreGone(t *testing.T) {
+	w := newWorld(t)
+	withdrawn := func() bool {
+		t.Helper()
+		ok, err := w.routes().Withdrawn(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+
+	if !withdrawn() {
+		t.Error("Withdrawn is false when there is no Forwarder")
+	}
+
+	if _, err := w.routes().Grant(t.Context(), cidrs); err != nil {
+		t.Fatal(err)
+	}
+	w.answer(nil)
+	if withdrawn() {
+		t.Error("Withdrawn is true while the Forwarder still asks for networks")
+	}
+
+	// The operator takes the networks away. The connector has not seen that.
+	if err := w.routes().Withdraw(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if withdrawn() {
+		t.Error("Withdrawn is true before the connector has seen that the networks are gone")
+	}
+
+	// The connector has seen it, and still says it grants forwarding.
+	w.answer(nil)
+	if withdrawn() {
+		t.Error("Withdrawn is true while the connector says the grant and the routes are in place")
+	}
+
+	// And now it says they are not.
+	w.answer(func(s *v1alpha1.ForwarderStatus) {
+		for _, typ := range []string{v1alpha1.ForwarderGranted, v1alpha1.ForwarderRoutesProgrammed} {
+			meta.SetStatusCondition(&s.Conditions, metav1.Condition{Type: typ, Status: metav1.ConditionFalse, Reason: "NoNetworks"})
+		}
+	})
+	if !withdrawn() {
+		t.Error("Withdrawn is false after the connector said nothing is granted or programmed")
+	}
+}
+
+// What the connector says about a grant it has not given is not the same as the
+// networks being taken away: while the Forwarder asks for them, they are not.
+func TestWithdrawnIsFalseWhileTheNetworksAreStillAskedForWhateverTheConnectorSays(t *testing.T) {
+	w := newWorld(t)
+	if _, err := w.routes().Grant(t.Context(), cidrs); err != nil {
+		t.Fatal(err)
+	}
+	w.answer(func(s *v1alpha1.ForwarderStatus) {
+		for _, typ := range []string{v1alpha1.ForwarderGranted, v1alpha1.ForwarderRoutesProgrammed} {
+			meta.SetStatusCondition(&s.Conditions, metav1.Condition{Type: typ, Status: metav1.ConditionFalse, Reason: "Conflict"})
+		}
+	})
+	if ok, _ := w.routes().Withdrawn(t.Context()); ok {
+		t.Error("Withdrawn is true for a Forwarder that still asks for networks, only because the connector grants none of them")
+	}
+}
+
+// A connector that says the grant is gone and the routes are not is not to be
+// believed that the routes are gone.
+func TestWithdrawnWantsBothTheGrantAndTheRoutesGone(t *testing.T) {
+	w := newWorld(t)
+	if _, err := w.routes().Grant(t.Context(), cidrs); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.routes().Withdraw(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	w.answer(func(s *v1alpha1.ForwarderStatus) {
+		meta.SetStatusCondition(&s.Conditions, metav1.Condition{Type: v1alpha1.ForwarderGranted, Status: metav1.ConditionFalse, Reason: "NoNetworks"})
+	})
+	if ok, _ := w.routes().Withdrawn(t.Context()); ok {
+		t.Error("Withdrawn is true while the connector says the routes are programmed")
+	}
+}
+
+func TestWithdrawnDoesNotWaitForeverForAConnectorThatIsNotThere(t *testing.T) {
+	w := newWorld(t)
+	if _, err := w.routes().Grant(t.Context(), cidrs); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.routes().Withdraw(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// No connector has answered the empty request.
+	w.now = w.now.Add(timeout / 2)
+	if ok, _ := w.routes().Withdrawn(t.Context()); ok {
+		t.Error("Withdrawn is true before the wait is over")
+	}
+	w.now = w.now.Add(timeout)
+	if ok, err := w.routes().Withdrawn(t.Context()); err != nil || !ok {
+		t.Errorf("Withdrawn = %v, %v after the wait; want true, so that a cluster with no connector can delete a SiteRouter", ok, err)
+	}
+}
+
+func TestWithdrawnRefusesAForwarderThatIsNotTheOperators(t *testing.T) {
+	w := newWorld(t)
+	mustCreate(t, &v1alpha1.Forwarder{
+		Name: gateway.NamesFor(w.sr.Name).Forwarder, Namespace: w.ns,
+		Spec: v1alpha1.ForwarderSpec{WorkloadSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}}},
+	})
+	var notOwned *gateway.NotOwnedError
+	if _, err := w.routes().Withdrawn(t.Context()); !errors.As(err, &notOwned) {
+		t.Errorf("error = %v, want a NotOwnedError", err)
+	}
+}
+
 func TestReportSaysWhereTheGatewayAndTheTenantAre(t *testing.T) {
 	w := newWorld(t)
 
