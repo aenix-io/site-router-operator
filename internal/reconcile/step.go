@@ -172,6 +172,17 @@ func (s *Stepper) Judge(ctx context.Context, in Instance) Result {
 	return res
 }
 
+// Unavailable is the result of a pass that could not judge the instance, because
+// what it is judged against could not be learned. The routes are left as they
+// are, as for a validator that wraps ErrValidationUnavailable, and nothing
+// reaches the engine. cause is for the log: it can name the API server or what it
+// failed on, which is not for a tenant, so the condition does not carry it.
+func Unavailable(cause error) Result {
+	res := Result{Conditions: map[string]Condition{}, Err: cause}
+	set(&res, CondValidated, false, ReasonValidationUnavailable, "the networks of the cluster could not be checked now; trying again")
+	return res
+}
+
 // judge runs the validation stage into res, and says whether the pass goes on.
 func (s *Stepper) judge(ctx context.Context, in Instance, res *Result, safe func(error) string) bool {
 	if in.Routes == nil {
@@ -187,10 +198,9 @@ func (s *Stepper) judge(ctx context.Context, in Instance, res *Result, safe func
 		set(res, CondValidated, true, ReasonAccepted, "")
 		return true
 	case errors.Is(err, ErrValidationUnavailable):
-		// The text of the cause is for the log, not for a tenant: it can name the
-		// API server or what it failed on.
-		res.Err = errors.New(safe(err))
-		set(res, CondValidated, false, ReasonValidationUnavailable, "the networks of the cluster could not be checked now; trying again")
+		u := Unavailable(errors.New(safe(err)))
+		res.Err = u.Err
+		res.Conditions[CondValidated] = u.Conditions[CondValidated]
 		return false
 	}
 	set(res, CondValidated, false, ReasonInvalidRemoteCIDR, safe(err))

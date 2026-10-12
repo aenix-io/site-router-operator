@@ -382,6 +382,28 @@ func TestAValidatorThatCannotJudgeLeavesTheRoutesAlone(t *testing.T) {
 	}
 }
 
+// A caller that cannot learn the networks of the cluster says so in the way a
+// validator does, so that the tenant is told the same and the cause stays in the
+// log.
+func TestUnavailableIsWhatAValidatorThatCannotJudgeGives(t *testing.T) {
+	cause := errors.New("listing the nodes: Get https://10.0.0.1:6443/api/v1/nodes: connection refused")
+	res := reconcile.Unavailable(cause)
+
+	c := res.Conditions[reconcile.CondValidated]
+	if c.OK || c.Reason != reconcile.ReasonValidationUnavailable {
+		t.Errorf("Validated = %+v, want False and ValidationUnavailable", c)
+	}
+	if len(res.Conditions) != 1 {
+		t.Errorf("conditions = %v, want Validated alone: the routes are not touched", res.Conditions)
+	}
+	if strings.Contains(c.Message, "10.0.0.1") || strings.Contains(c.Message, "connection refused") {
+		t.Errorf("the condition carries the cause: %q", c.Message)
+	}
+	if !errors.Is(res.Err, cause) {
+		t.Errorf("Err = %v, want the cause, for the log", res.Err)
+	}
+}
+
 // Judge is the first stage of a pass and nothing else: a gateway that is not up
 // has nothing to configure, and a tenant whose networks are refused is told so
 // before the VM has booted.
