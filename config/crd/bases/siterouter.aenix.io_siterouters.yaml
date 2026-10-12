@@ -129,11 +129,13 @@ spec:
                   routed to the gateway, and traffic from them is let through to the tenant.
                 items:
                   description: |-
-                    IPv4CIDR is an IPv4 network in canonical form that is not the default route.
+                    IPv4CIDR is an IPv4 network in canonical form that a remote site can have: not
+                    the default route, not shorter than /8, and not overlapping 0.0.0.0/8,
+                    loopback, link-local or multicast.
 
                     Only what is wrong whatever the cluster is rejected here. Whether a network
-                    overlaps the networks of the cluster, or is loopback or link-local, is judged
-                    by the controller against the cluster itself, not by this schema.
+                    overlaps the networks of the cluster depends on the cluster and is judged by
+                    the controller against the cluster itself, not by this schema.
 
                     The length limit is what lets the apiserver bound the cost of the rules.
                   maxLength: 18
@@ -143,8 +145,16 @@ spec:
                     rule: isCIDR(self) && cidr(self).ip().family() == 4
                   - message: a default route (/0) is not allowed
                     rule: '!isCIDR(self) || cidr(self).prefixLength() > 0'
+                  - message: a network shorter than /8 is not allowed
+                    rule: '!isCIDR(self) || cidr(self).prefixLength() == 0 || cidr(self).prefixLength()
+                      >= 8'
                   - message: host bits must be zero (use the network address)
                     rule: '!isCIDR(self) || string(cidr(self).masked()) == self'
+                  - message: must not overlap 0.0.0.0/8, loopback (127.0.0.0/8), link-local
+                      (169.254.0.0/16) or multicast (224.0.0.0/4)
+                    rule: '!isCIDR(self) || cidr(self).ip().family() != 4 || ![''0.0.0.0/8'',
+                      ''127.0.0.0/8'', ''169.254.0.0/16'', ''224.0.0.0/4''].exists(r,
+                      cidr(r).containsIP(cidr(self).ip()) || cidr(self).containsIP(cidr(r).ip()))'
                 maxItems: 16
                 type: array
                 x-kubernetes-list-type: set
@@ -181,8 +191,16 @@ spec:
                         rule: isCIDR(self) && cidr(self).ip().family() == 4
                       - message: a default route (/0) is not allowed
                         rule: '!isCIDR(self) || cidr(self).prefixLength() > 0'
+                      - message: a network shorter than /8 is not allowed
+                        rule: '!isCIDR(self) || cidr(self).prefixLength() == 0 ||
+                          cidr(self).prefixLength() >= 8'
                       - message: host bits must be zero (use the network address)
                         rule: '!isCIDR(self) || string(cidr(self).masked()) == self'
+                      - message: must not overlap 0.0.0.0/8, loopback (127.0.0.0/8),
+                          link-local (169.254.0.0/16) or multicast (224.0.0.0/4)
+                        rule: '!isCIDR(self) || cidr(self).ip().family() != 4 || ![''0.0.0.0/8'',
+                          ''127.0.0.0/8'', ''169.254.0.0/16'', ''224.0.0.0/4''].exists(r,
+                          cidr(r).containsIP(cidr(self).ip()) || cidr(self).containsIP(cidr(r).ip()))'
                     nextHop:
                       description: nextHop is where traffic for the destination is
                         sent.

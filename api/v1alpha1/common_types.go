@@ -16,18 +16,22 @@ limitations under the License.
 
 package v1alpha1
 
-// IPv4CIDR is an IPv4 network in canonical form that is not the default route.
+// IPv4CIDR is an IPv4 network in canonical form that a remote site can have: not
+// the default route, not shorter than /8, and not overlapping 0.0.0.0/8,
+// loopback, link-local or multicast.
 //
 // Only what is wrong whatever the cluster is rejected here. Whether a network
-// overlaps the networks of the cluster, or is loopback or link-local, is judged
-// by the controller against the cluster itself, not by this schema.
+// overlaps the networks of the cluster depends on the cluster and is judged by
+// the controller against the cluster itself, not by this schema.
 //
 // The length limit is what lets the apiserver bound the cost of the rules.
 //
 // +kubebuilder:validation:MaxLength=18
 // +kubebuilder:validation:XValidation:rule="isCIDR(self) && cidr(self).ip().family() == 4",message="must be an IPv4 CIDR"
 // +kubebuilder:validation:XValidation:rule="!isCIDR(self) || cidr(self).prefixLength() > 0",message="a default route (/0) is not allowed"
+// +kubebuilder:validation:XValidation:rule="!isCIDR(self) || cidr(self).prefixLength() == 0 || cidr(self).prefixLength() >= 8",message="a network shorter than /8 is not allowed"
 // +kubebuilder:validation:XValidation:rule="!isCIDR(self) || string(cidr(self).masked()) == self",message="host bits must be zero (use the network address)"
+// +kubebuilder:validation:XValidation:rule="!isCIDR(self) || cidr(self).ip().family() != 4 || !['0.0.0.0/8', '127.0.0.0/8', '169.254.0.0/16', '224.0.0.0/4'].exists(r, cidr(r).containsIP(cidr(self).ip()) || cidr(self).containsIP(cidr(r).ip()))",message="must not overlap 0.0.0.0/8, loopback (127.0.0.0/8), link-local (169.254.0.0/16) or multicast (224.0.0.0/4)"
 type IPv4CIDR string
 
 // IPv4Address is an IPv4 address.

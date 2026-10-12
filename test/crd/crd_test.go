@@ -217,17 +217,91 @@ func TestSiteRouterRejects(t *testing.T) {
 	}
 }
 
-// The schema refuses only the default route itself. Networks that no tenant has a
-// use for but that are well-formed IPv4, such as the two halves of the default
-// route, loopback and link-local, pass it: whether they overlap the cluster is
-// for the controller to judge against the cluster's own networks. This test
-// states the division of labor, and is the one to change if the schema is made
-// stricter.
-func TestSiteRouterSchemaLeavesClusterDependentChecksToTheController(t *testing.T) {
-	for _, cidr := range []v1alpha1.IPv4CIDR{"0.0.0.0/1", "128.0.0.0/1", "127.0.0.0/8", "169.254.0.0/16", "224.0.0.0/4"} {
+// networkHolders put one network into each place the IPv4CIDR type is used, so
+// that a rule on the type is checked wherever the type appears.
+var networkHolders = []struct {
+	name string
+	with func(v1alpha1.IPv4CIDR) client.Object
+}{
+	{"remoteCIDRs", func(c v1alpha1.IPv4CIDR) client.Object {
+		return siteRouter(func(s *v1alpha1.SiteRouter) { s.Spec.RemoteCIDRs = []v1alpha1.IPv4CIDR{c} })
+	}},
+	{"staticRoutes", func(c v1alpha1.IPv4CIDR) client.Object {
+		return siteRouter(func(s *v1alpha1.SiteRouter) {
+			s.Spec.StaticRoutes = []v1alpha1.StaticRoute{{Destination: c, NextHop: "10.0.0.1"}}
+		})
+	}},
+	{"forwarder cidrs", func(c v1alpha1.IPv4CIDR) client.Object {
+		return forwarder(func(f *v1alpha1.Forwarder) { f.Spec.CIDRs = []v1alpha1.IPv4CIDR{c} })
+	}},
+}
+
+// The schema refuses the networks that no remote site can have whatever the
+// cluster is: nothing shorter than /8, which takes in the two halves of the
+// default route, and nothing that overlaps the "this network", loopback,
+// link-local or multicast ranges, whether it lies inside one, is one, or
+// contains one. The neighbors of those ranges and the shortest prefix allowed
+// are accepted, so that a rule that is too wide is caught as well as one that is
+// too narrow.
+//
+// The cases that lie inside or around a range are what keeps the rule on
+// containsIP: the CEL containsCIDR of the 1.31 apiserver is true only for equal
+// networks, and a rule written with it passes 127.0.0.1/32 there.
+func TestNetworkBoundaries(t *testing.T) {
+	const (
+		tooShort = "a network shorter than /8 is not allowed"
+		reserved = "must not overlap 0.0.0.0/8, loopback"
+	)
+	cases := []struct {
+		cidr v1alpha1.IPv4CIDR
+		want string // empty: accepted
+	}{
+		{"10.0.0.0/8", ""},
+		{"1.0.0.0/8", ""},
+		{"126.0.0.0/8", ""},
+		{"128.0.0.0/8", ""},
+		{"169.253.0.0/16", ""},
+		{"169.255.0.0/16", ""},
+		{"223.255.255.0/24", ""},
+
+		{"10.0.0.0/7", tooShort},
+		{"0.0.0.0/1", tooShort},
+		{"128.0.0.0/1", tooShort},
+
+		{"0.0.0.0/8", reserved},
+		{"0.1.0.0/16", reserved},
+		{"127.0.0.0/8", reserved},
+		{"127.0.0.1/32", reserved},
+		{"169.254.0.0/16", reserved},
+		{"169.254.169.254/32", reserved},
+		{"169.0.0.0/8", reserved},
+		{"224.0.0.0/4", reserved},
+		{"239.255.255.250/32", reserved},
+	}
+	for _, h := range networkHolders {
+		for _, c := range cases {
+			t.Run(h.name+"/"+string(c.cidr), func(t *testing.T) {
+				err := create(t, h.with(c.cidr))
+				if c.want == "" {
+					if err != nil {
+						t.Fatalf("%s was rejected: %v", c.cidr, err)
+					}
+					return
+				}
+				wantInvalid(t, err, c.want)
+			})
+		}
+	}
+}
+
+// What the schema cannot know is the cluster's own networks. A network that
+// overlaps them is well-formed and passes; the controller judges it against the
+// cluster. This test states that division of labor, and is the one to change if
+// it moves.
+func TestSchemaDoesNotJudgeClusterNetworks(t *testing.T) {
+	for _, cidr := range []v1alpha1.IPv4CIDR{"10.244.0.0/16", "10.96.0.0/12", "100.64.0.0/16", "172.16.0.0/12"} {
 		t.Run(string(cidr), func(t *testing.T) {
-			s := siteRouter(func(s *v1alpha1.SiteRouter) { s.Spec.RemoteCIDRs = []v1alpha1.IPv4CIDR{cidr} })
-			if err := create(t, s); err != nil {
+			if err := create(t, siteRouter(func(s *v1alpha1.SiteRouter) { s.Spec.RemoteCIDRs = []v1alpha1.IPv4CIDR{cidr} })); err != nil {
 				t.Fatalf("the schema now rejects %s; update this test and the type's description: %v", cidr, err)
 			}
 		})
