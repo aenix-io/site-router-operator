@@ -62,9 +62,19 @@ generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and
 tidy: ## Run go mod tidy in every module.
 	for m in $(MODULES); do (cd $$m && go mod tidy) || exit 1; done
 
+# The chart takes the rules of its ClusterRole and its CRDs from copies of what
+# controller-gen makes, so that they have one source: the markers in the code.
+# A CRD that is no longer made is removed from the chart too.
+.PHONY: chart-manifests
+chart-manifests: manifests ## Copy the generated ClusterRole and CRDs into the chart.
+	mkdir -p "$(CHART_DIR)/files/crds" "$(CHART_DIR)/files/rbac"
+	rm -f "$(CHART_DIR)"/files/crds/*.yaml
+	cp config/crd/bases/*.yaml "$(CHART_DIR)/files/crds/"
+	cp config/rbac/role.yaml "$(CHART_DIR)/files/rbac/role.yaml"
+
 .PHONY: check-generated
-check-generated: manifests generate tidy ## Fail if generated files or go.mod/go.sum are out of date. Run in a tree with no uncommitted changes.
-	@git diff --exit-code || { echo "Generated files are out of date: run 'make manifests generate tidy' and commit the result."; exit 1; }
+check-generated: manifests generate tidy chart-manifests ## Fail if generated files, their copies in the chart or go.mod/go.sum are out of date. Run in a tree with no uncommitted changes.
+	@git diff --exit-code || { echo "Generated files are out of date: run 'make manifests generate tidy chart-manifests' and commit the result."; exit 1; }
 	@test -z "$$(git ls-files --others --exclude-standard)" || { echo "Generation left untracked files:"; git ls-files --others --exclude-standard; exit 1; }
 
 .PHONY: check-commits

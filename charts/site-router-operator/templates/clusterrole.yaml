@@ -1,0 +1,32 @@
+{{- /*
+The rules are those of config/rbac/role.yaml, which controller-gen makes from the
+markers in internal/controller/setup.go, and make chart-manifests copies here.
+They are never written by hand: a verb the controller does not need is not given.
+*/ -}}
+{{- $role := .Files.Get "files/rbac/role.yaml" | fromYaml }}
+{{- if not (get $role "rules") }}
+{{- fail "files/rbac/role.yaml has no rules: run make chart-manifests" }}
+{{- end }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "site-router-operator.fullname" . }}
+  labels:
+    {{- include "site-router-operator.labels" . | nindent 4 }}
+rules:
+  {{- toYaml $role.rules | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "site-router-operator.fullname" . }}
+  labels:
+    {{- include "site-router-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "site-router-operator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "site-router-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}

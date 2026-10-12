@@ -111,6 +111,13 @@ podDisruptionBudget:
   minAvailable: ""
   maxUnavailable: 1
 
+crds:
+  # Install the CRDs of SiteRouter and Forwarder with the chart and upgrade them
+  # with it. Turn it off where the platform delivers the CRDs itself. They are
+  # kept when the release is uninstalled or this is turned off: deleting them
+  # would delete every SiteRouter, and with it every gateway.
+  install: true
+
 # The configuration of the operator: what the platform decides about gateways
 # and a SiteRouter does not say. It is written to a ConfigMap as is and read by
 # the operator once, when it starts; a change rolls the pods. The operator
