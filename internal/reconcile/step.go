@@ -134,19 +134,29 @@ func redact(text string, secrets []string) string {
 //	validate -> connect -> apply -> confirm -> routes -> observe
 //
 // Routes are programmed only after the engine confirms the source filter, so no
-// route is added in front of an unconfirmed guard. A failed confirmation adds
-// no routes, does not withdraw the ones that already exist, and drops the
-// stored revision, so the next pass applies the configuration again.
+// route is added in front of an unconfirmed guard. A confirmation that fails
+// also drops the stored revision, so the next pass applies the configuration
+// again, and what happens to the routes that already exist depends on what the
+// engine said: if it reports the filter down, the routes are withdrawn, because
+// a route in front of no filter must not stay; if it cannot be reached or cannot
+// tell, they stay, so that a failure of the management API does not blackhole
+// the tenant's traffic.
 func (s *Stepper) Step(ctx context.Context, ep engine.Endpoint, in Instance, st *State) Result {
 	res := Result{Conditions: map[string]Condition{}}
 	secrets := append(in.Desired.Secrets(), ep.Secrets()...)
 	safe := func(err error) string { return redact(err.Error(), secrets) }
+	// withdraw takes the routes away and records a failure to do so.
+	withdraw := func() bool {
+		if werr := s.forwarder.WithdrawRoutes(ctx, in.Name); werr != nil {
+			set(&res, CondRoutesProgrammed, false, ReasonRoutesFailed, "withdrawing routes: "+safe(werr))
+			return false
+		}
+		return true
+	}
 
 	if err := s.validate(in); err != nil {
 		set(&res, CondValidated, false, ReasonInvalidRemoteCIDR, safe(err))
-		if werr := s.forwarder.WithdrawRoutes(ctx, in.Name); werr != nil {
-			set(&res, CondRoutesProgrammed, false, ReasonRoutesFailed, "withdrawing routes: "+safe(werr))
-		}
+		_ = withdraw()
 		return res
 	}
 	set(&res, CondValidated, true, ReasonAccepted, "")
@@ -172,6 +182,9 @@ func (s *Stepper) Step(ctx context.Context, ep engine.Endpoint, in Instance, st 
 			msg = safe(err)
 		}
 		set(&res, CondConfigured, false, ReasonSourceFilterPending, msg)
+		if err == nil && rep.TunnelIngress == engine.GuardDown && withdraw() {
+			set(&res, CondRoutesProgrammed, false, ReasonSourceFilterPending, "routes withdrawn while the source filter is down")
+		}
 		return res
 	}
 	set(&res, CondConfigured, true, ReasonConfigApplied, "")

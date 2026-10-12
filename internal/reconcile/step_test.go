@@ -66,7 +66,7 @@ type harness struct {
 
 	validateErr   error // when set, the validator rejects every instance with it
 	connectErr    error
-	confirmDetail string // when set, Confirm reports the guard down with this detail
+	confirmReport *engine.GuardReport // when set, Confirm returns it instead of asking the guest
 	routesErr     error
 	withdrawErr   error
 }
@@ -100,8 +100,8 @@ func (x spySession) Apply(ctx context.Context, d engine.Desired, prev string) (e
 
 func (x spySession) Confirm(ctx context.Context) (engine.GuardReport, error) {
 	x.h.log = append(x.h.log, "confirm")
-	if x.h.confirmDetail != "" {
-		return engine.GuardReport{TunnelIngress: engine.GuardDown, Detail: x.h.confirmDetail}, nil
+	if x.h.confirmReport != nil {
+		return *x.h.confirmReport, nil
 	}
 	return x.Session.Confirm(ctx)
 }
@@ -246,7 +246,7 @@ func TestConfirmFailureBlocksRoutesAndForcesReapply(t *testing.T) {
 	}
 }
 
-func TestConfirmFailureLeavesExistingRoutesAlone(t *testing.T) {
+func TestGuardDownWithdrawsRoutes(t *testing.T) {
 	for _, r := range rigs() {
 		t.Run(r.name, func(t *testing.T) {
 			h := newHarness(t, r.eng)
@@ -254,22 +254,62 @@ func TestConfirmFailureLeavesExistingRoutesAlone(t *testing.T) {
 			h.step(instance("10.244.1.5/32"), st)
 			h.takeLog()
 
-			r.breakFilter()
-			h.confirmDetail = "filter missing"
+			h.confirmReport = &engine.GuardReport{TunnelIngress: engine.GuardDown, Detail: "filter missing"}
 			res := h.step(instance("10.244.1.5/32"), st)
-			if got := h.takeLog(); slices.Contains(got, "routes") || slices.Contains(got, "withdraw") {
-				t.Errorf("a failed confirmation touched the routes: %v", got)
+			if got := h.takeLog(); slices.Contains(got, "routes") || !slices.Contains(got, "withdraw") {
+				t.Errorf("with the filter down the routes must be withdrawn, not programmed: %v", got)
+			}
+			if c := res.Conditions[reconcile.CondRoutesProgrammed]; c.OK || c.Reason != reconcile.ReasonSourceFilterPending {
+				t.Errorf("RoutesProgrammed = %+v, want false with reason %s", c, reconcile.ReasonSourceFilterPending)
 			}
 			if res.Conditions[reconcile.CondConfigured].OK {
 				t.Error("Configured is OK with the filter down")
 			}
 
-			h.confirmDetail = ""
+			h.confirmReport = nil
 			res = h.step(instance("10.244.1.5/32"), st)
-			if !res.Conditions[reconcile.CondConfigured].OK || !slices.Contains(h.log, "routes") {
-				t.Errorf("the pass after the filter came back did not recover: %+v, calls %v", res.Conditions, h.log)
+			if !res.Conditions[reconcile.CondRoutesProgrammed].OK || !slices.Contains(h.log, "routes") {
+				t.Errorf("the pass after the filter came back did not restore the routes: %+v, calls %v", res.Conditions, h.log)
 			}
 		})
+	}
+}
+
+func TestGuardDownWithdrawFailureIsReported(t *testing.T) {
+	h := newHarness(t, rigs()[0].eng)
+	h.confirmReport = &engine.GuardReport{TunnelIngress: engine.GuardDown}
+	h.withdrawErr = errors.New("connector is down")
+	res := h.step(instance("10.244.1.5/32"), &reconcile.State{})
+	if c := res.Conditions[reconcile.CondRoutesProgrammed]; c.OK || c.Reason != reconcile.ReasonRoutesFailed {
+		t.Errorf("a failed withdrawal after a down filter was not reported: %+v", c)
+	}
+}
+
+// When the engine cannot say whether the filter is there, the routes stay: a
+// failure of the management API must not blackhole the tenant's traffic.
+func TestUnknownGuardLeavesRoutesAlone(t *testing.T) {
+	injections := map[string]func(*harness, rig){
+		"confirm error": func(_ *harness, rg rig) { rg.failConfirm(errors.New("management API unreachable")) },
+		"unknown state": func(h *harness, _ rig) { h.confirmReport = &engine.GuardReport{TunnelIngress: engine.GuardUnknown} },
+	}
+	for name, inject := range injections {
+		for _, r := range rigs() {
+			t.Run(name+"/"+r.name, func(t *testing.T) {
+				h := newHarness(t, r.eng)
+				st := &reconcile.State{}
+				h.step(instance("10.244.1.5/32"), st)
+				h.takeLog()
+
+				inject(h, r)
+				res := h.step(instance("10.244.1.5/32"), st)
+				if got := h.takeLog(); slices.Contains(got, "routes") || slices.Contains(got, "withdraw") {
+					t.Errorf("an unconfirmed guard of unknown state touched the routes: %v", got)
+				}
+				if res.Conditions[reconcile.CondConfigured].OK {
+					t.Error("Configured is OK although the filter could not be confirmed")
+				}
+			})
+		}
 	}
 }
 
@@ -313,7 +353,9 @@ func TestSecretsRedactedOnEveryPath(t *testing.T) {
 		{"connect", reconcile.CondConfigured, func(h *harness, _ rig) { h.connectErr = leak }},
 		{"apply", reconcile.CondConfigured, func(_ *harness, r rig) { r.failApply(leak) }},
 		{"confirm error", reconcile.CondConfigured, func(_ *harness, r rig) { r.failConfirm(leak) }},
-		{"confirm detail", reconcile.CondConfigured, func(h *harness, _ rig) { h.confirmDetail = leak.Error() }},
+		{"confirm detail", reconcile.CondConfigured, func(h *harness, _ rig) {
+			h.confirmReport = &engine.GuardReport{TunnelIngress: engine.GuardDown, Detail: leak.Error()}
+		}},
 		{"routes", reconcile.CondRoutesProgrammed, func(h *harness, _ rig) { h.routesErr = leak }},
 		{"observe", reconcile.CondTunnelEstablished, func(_ *harness, r rig) { r.failObserve(leak) }},
 	}
