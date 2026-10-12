@@ -40,23 +40,24 @@ import (
 // What the operator is allowed to do. The markers are what `make manifests` turns
 // into the ClusterRole, so a verb that is not needed is not given.
 //
-// A Secret is read and made once; none is ever updated. The objects that are
-// applied are made and patched. The VM of a gateway is not deleted by the
-// operator but by the garbage collector, with its SiteRouter, and so is the
-// Forwarder. Nodes and Services are listed to learn the addresses the cluster
-// has.
+// A Secret is read and made once; none is ever updated, and the seed of an image
+// a gateway no longer runs is deleted. The objects that are applied are made and
+// patched. The VM of a gateway is not deleted by the operator but by the garbage
+// collector, with its SiteRouter, and so is the Forwarder; its instance is deleted
+// to have it boot from another disk, and the disk of an image it no longer runs is
+// deleted. Nodes and Services are listed to learn the addresses the cluster has.
 //
 // +kubebuilder:rbac:groups=siterouter.aenix.io,resources=siterouters,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=siterouter.aenix.io,resources=siterouters/status,verbs=get;patch
 // +kubebuilder:rbac:groups=siterouter.aenix.io,resources=siterouters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=siterouter.aenix.io,resources=forwarders,verbs=get;list;watch;create;patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;create;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;patch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=list
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;list;watch;create;patch
-// +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachineinstances,verbs=get;list;watch
-// +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=datavolumes,verbs=get;create
+// +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachineinstances,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=datavolumes,verbs=get;list;create;delete
 // +kubebuilder:rbac:groups=cilium.io,resources=ciliumnetworkpolicies,verbs=get;create;patch
 
 // maxConcurrentReconciles is how many SiteRouters are reconciled at once. A pass

@@ -17,6 +17,8 @@ limitations under the License.
 package controller
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -26,12 +28,16 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/aenix-io/site-router-operator/api/v1alpha1"
+	"github.com/aenix-io/site-router-operator/internal/config"
 	"github.com/aenix-io/site-router-operator/internal/gateway"
 	"github.com/aenix-io/site-router-operator/internal/reconcile"
+	"github.com/aenix-io/site-router-operator/internal/rollout"
 )
 
 func statusOf(c metav1.Condition) string { return string(c.Status) + "/" + c.Reason }
@@ -375,5 +381,112 @@ func TestOnlyASecretASiteRouterControlsIsAnotherGateways(t *testing.T) {
 		if got := controlledBySiteRouter(c.secret); got != c.want {
 			t.Errorf("%s: controlledBySiteRouter = %v, want %v", name, got, c.want)
 		}
+	}
+}
+
+const (
+	testDigestA = "sha256:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	testDigestB = "sha256:" + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	testDigestC = "sha256:" + "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+)
+
+// The name of a version is what the status says when it is of the same image, else
+// what the configuration lists for the digest, else what the status last knew; an
+// image no one lists is not given a name it could be mistaken for.
+func TestTheVersionOfAnImage(t *testing.T) {
+	r := &Reconciler{config: config.Config{Engine: config.Engine{Versions: []config.Version{
+		{Name: "stable", Image: "registry.example/disk:2.0@" + testDigestB},
+		{Name: "2.0", Image: "registry.example/disk:2.0@" + testDigestB},
+		{Name: "1.0", Image: "registry.example/disk:1.0@" + testDigestA},
+	}}}}
+	at := func(version, digest string) *v1alpha1.SiteRouter {
+		return &v1alpha1.SiteRouter{Status: v1alpha1.SiteRouterStatus{Engine: v1alpha1.EngineStatus{Version: version, ImageDigest: digest}}}
+	}
+	for name, c := range map[string]struct {
+		sr     *v1alpha1.SiteRouter
+		digest string
+		want   string
+	}{
+		"the status knows the image":                  {at("2.0", testDigestB), testDigestB, "2.0"},
+		"another name of the same image":              {at("stable", testDigestB), testDigestB, "stable"},
+		"the status is of another image":              {at("1.0", testDigestA), testDigestB, "stable"},
+		"the status was lost":                         {at("", ""), testDigestA, "1.0"},
+		"an image that is not listed, the last known": {at("1.0", testDigestA), testDigestC, "1.0"},
+		"an image that is not listed, nothing known":  {at("", ""), testDigestC, "unlisted"},
+		"the status has a version and no digest":      {at("1.0", ""), testDigestB, "stable"},
+	} {
+		if got := r.versionOf(c.sr, c.digest); got != c.want {
+			t.Errorf("%s: versionOf = %q, want %q", name, got, c.want)
+		}
+	}
+}
+
+// listFails makes the listing of SiteRouters fail while it is set.
+type listFails struct {
+	client.Client
+	fail bool
+}
+
+func (l *listFails) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if l.fail {
+		return errors.New("the apiserver does not answer")
+	}
+	return l.Client.List(ctx, list, opts...)
+}
+
+// The places of the moves that were under way are read once, before the first pass:
+// from the statuses, not counting a SiteRouter that is being deleted, and tried
+// again until they could be read.
+func TestThePlacesOfMovesAreReadOnceBeforeTheFirstPass(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	siteRouter := func(name string, reason string, deleting bool) *v1alpha1.SiteRouter {
+		sr := &v1alpha1.SiteRouter{Name: name, Namespace: "ns"}
+		if reason != "" {
+			sr.Status.Conditions = []metav1.Condition{{
+				Type: v1alpha1.ConditionGatewayReady, Status: metav1.ConditionTrue, Reason: reason,
+				LastTransitionTime: metav1.Now(),
+			}}
+		}
+		if deleting {
+			now := metav1.Now()
+			sr.DeletionTimestamp, sr.Finalizers = &now, []string{Finalizer}
+		}
+		return sr
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		siteRouter("moving", v1alpha1.ReasonUpgrading, false),
+		siteRouter("running", "Running", false),
+		siteRouter("none", "", false),
+		siteRouter("deleted", v1alpha1.ReasonUpgrading, true),
+	).Build()
+	c := &listFails{Client: fakeClient, fail: true}
+	r := &Reconciler{client: c, gate: rollout.NewGate(5)}
+
+	if err := r.restoreGate(t.Context()); err == nil {
+		t.Fatal("a failure to read was not reported, so the pass would run with no places taken")
+	}
+	if n := r.gate.Moving(); n != 0 {
+		t.Errorf("%d places taken before they could be read", n)
+	}
+
+	c.fail = false
+	if err := r.restoreGate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if n := r.gate.Moving(); n != 1 {
+		t.Errorf("%d places taken, want the one gateway that was moving", n)
+	}
+
+	// It is not read again: a place that was given back is not taken again from a
+	// status that has not caught up.
+	r.gate.Release(types.NamespacedName{Namespace: "ns", Name: "moving"})
+	if err := r.restoreGate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if n := r.gate.Moving(); n != 0 {
+		t.Errorf("%d places taken after the second call, want it to read nothing", n)
 	}
 }

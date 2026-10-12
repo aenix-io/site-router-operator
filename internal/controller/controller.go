@@ -125,6 +125,15 @@ type Reconciler struct {
 	forwarders *forwarder.Manager
 	gate       *rollout.Gate
 	revisions  revisions
+
+	// restored is true once the places of the moves that were under way have been
+	// taken, which is before the first pass.
+	restoreMu sync.Mutex
+	restored  bool
+	// unsupported is the version an annotation named that is not listed, for each
+	// SiteRouter that has said so, so that it is said once.
+	unsupportedMu sync.Mutex
+	unsupported   map[types.NamespacedName]string
 }
 
 // New returns a Reconciler.
@@ -167,8 +176,9 @@ func New(o Options) (*Reconciler, error) {
 			NotRespondingAfter: o.Config.Timing.ForwarderNotResponding.Duration,
 			Now:                o.Now,
 		},
-		gate:      rollout.NewGate(o.Config.Upgrade.MaxConcurrent),
-		revisions: revisions{m: map[types.NamespacedName]revision{}},
+		gate:        rollout.NewGate(o.Config.Upgrade.MaxConcurrent),
+		revisions:   revisions{m: map[types.NamespacedName]revision{}},
+		unsupported: map[types.NamespacedName]string{},
 	}
 	if r.now == nil {
 		r.now = time.Now
@@ -185,6 +195,12 @@ type outcome struct {
 	tunnels map[string]engine.TunnelState
 	wanted  []string
 	requeue time.Duration
+	// notes are events the pass has to say that no condition says.
+	notes []note
+	// completed is true when a gateway has finished moving to another image.
+	completed bool
+	// waiting is true when a gateway is to move and has no place yet.
+	waiting bool
 	// err is why the pass is to be tried again at once, with a back-off. It is set
 	// for what is not for a human to put right; the rest waits for the next pass.
 	err error
@@ -198,6 +214,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			r.forget(req.NamespacedName)
 			return ctrl.Result{}, nil
 		}
+		return ctrl.Result{}, err
+	}
+	if err := r.restoreGate(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
 	if !sr.DeletionTimestamp.IsZero() {
@@ -297,7 +316,7 @@ func (r *Reconciler) pass(ctx context.Context, sr *v1alpha1.SiteRouter) outcome 
 		}
 	}
 
-	conds.set(v1alpha1.ConditionGatewayReady, gw.ready(), gw.reasonOr(reasonRunning), gw.message)
+	conds.set(v1alpha1.ConditionGatewayReady, gw.ready(), gw.shownReason(), gw.shownMessage())
 	conds.fromStep(res)
 	if c, ok := res.Conditions[reconcile.CondValidated]; ok && c.OK && gw.ready() && !built.TunnelConfigured && sr.Spec.Peer.Address == "" {
 		conds.put(v1alpha1.ConditionValidated, metav1.ConditionTrue, v1alpha1.ReasonPeerNotConfigured, messagePeerAbsent)
@@ -305,6 +324,7 @@ func (r *Reconciler) pass(ctx context.Context, sr *v1alpha1.SiteRouter) outcome 
 	st.Conditions = conds.finish(reasonNotReady, messageNotReady)
 	out.status = st
 	out.tunnels = res.Tunnels
+	out.notes, out.completed, out.waiting = gw.notes, gw.completed, gw.waiting
 
 	if res.Err != nil {
 		log.Info("the pass could not go on", "reason", res.Err.Error())
@@ -332,6 +352,17 @@ type gatewayView struct {
 	// secrets are what is known of the pass that must not reach a condition, an
 	// event or the log, as it is learned.
 	secrets []string
+	// okReason and okMessage are said for a gateway that can be configured, and say
+	// that something is on besides: a disk that is being made for another image, or
+	// a move that was given up. They are empty when there is nothing to say.
+	okReason  string
+	okMessage string
+	// notes are events the pass has to say.
+	notes []note
+	// completed is true when the gateway has finished moving to another image.
+	completed bool
+	// waiting is true when the gateway is to move and has no place yet.
+	waiting bool
 
 	endpoint      engine.Endpoint
 	tunnelAddress string
@@ -341,12 +372,26 @@ type gatewayView struct {
 
 func (g *gatewayView) ready() bool { return g.reason == "" }
 
-func (g *gatewayView) reasonOr(reason string) string {
-	if g.reason == "" {
-		return reason
+// shownReason and shownMessage are what the GatewayReady condition says.
+func (g *gatewayView) shownReason() string {
+	switch {
+	case g.reason != "":
+		return g.reason
+	case g.okReason != "":
+		return g.okReason
 	}
-	return g.reason
+	return reasonRunning
 }
+
+func (g *gatewayView) shownMessage() string {
+	if g.reason == "" {
+		return g.okMessage
+	}
+	return g.message
+}
+
+// info records what is on besides a gateway that can be configured.
+func (g *gatewayView) info(reason, message string) { g.okReason, g.okMessage = reason, message }
 
 func (g *gatewayView) pending(reason, message string) {
 	if g.reason == "" {
@@ -388,96 +433,244 @@ func isLoadBalancerClass(err error) bool {
 	return ok
 }
 
-// makeGateway makes the objects of the gateway exist and reads how the gateway
-// stands. It never returns an error: what went wrong is in the view, so that the
-// pass can still tell the tenant what is wrong with what they declared.
-func (r *Reconciler) makeGateway(ctx context.Context, sr *v1alpha1.SiteRouter, st *v1alpha1.SiteRouterStatus) *gatewayView {
-	g := &gatewayView{}
-	names := gateway.NamesFor(sr.Name)
+// inputs are what the objects of a gateway are made from besides the image.
+type inputs struct {
+	psk, pskPending string
+	// existing are the credentials the engine minted for the gateway, which it keeps.
+	existing map[string][]byte
+}
 
-	dec, err := r.decide(sr)
-	if err != nil {
-		g.fail(err)
-		return g
-	}
-
+// collect reads the key of the tunnel and the credentials of the gateway, and notes
+// them as secrets.
+func (r *Reconciler) collect(ctx context.Context, sr *v1alpha1.SiteRouter, st *v1alpha1.SiteRouterStatus, g *gatewayView) (inputs, error) {
+	var in inputs
 	psk, pskName, pskPending, err := r.preSharedKey(ctx, sr)
 	if err != nil {
-		g.fail(err)
-		return g
+		return in, err
 	}
 	st.PSKSecretRef = &v1alpha1.LocalSecretRef{Name: pskName}
+	in.psk, in.pskPending = psk, pskPending
 	if psk != "" {
 		g.secrets = append(g.secrets, psk)
 	}
 
+	names := gateway.NamesFor(sr.Name)
 	keySecret, err := r.getSecret(ctx, sr.Namespace, names.APIKey)
 	if err != nil {
-		g.fail(err)
-		return g
+		return in, err
 	}
-	var existing map[string][]byte
 	if keySecret != nil {
 		if !metav1.IsControlledBy(keySecret, sr) {
-			g.fail(&gateway.NotOwnedError{Kind: "Secret", Name: names.APIKey})
-			return g
+			return in, &gateway.NotOwnedError{Kind: "Secret", Name: names.APIKey}
 		}
-		existing = keySecret.Data
-		g.secrets = append(g.secrets, engine.Endpoint{Credentials: existing}.Secrets()...)
+		in.existing = keySecret.Data
+		g.secrets = append(g.secrets, engine.Endpoint{Credentials: in.existing}.Secrets()...)
+	}
+	return in, nil
+}
+
+// render asks the engine for the seed of a version and renders the objects of the
+// gateway for its image. An image no version is listed for runs with the seed of the
+// latest: its own exists already and is never written again.
+func (r *Reconciler) render(sr *v1alpha1.SiteRouter, d rollout.Decision, in inputs, g *gatewayView) (engine.BootstrapPlan, []client.Object, error) {
+	version := d.Target
+	if d.Orphaned {
+		version = r.config.Engine.Latest
 	}
 	plan, err := r.engine.Bootstrap(engine.BootstrapRequest{
 		Instance:        sr.Name,
 		Namespace:       sr.Namespace,
 		ManagementAllow: r.config.ManagementCIDR,
-		Version:         dec.Target,
-		Existing:        existing,
+		Version:         version,
+		Existing:        in.existing,
 	})
 	if err != nil {
-		g.fail(fmt.Errorf("asking the engine for the seed of version %s: %w", dec.Target, err))
-		return g
+		return plan, nil, fmt.Errorf("asking the engine for the seed of version %s: %w", version, err)
 	}
-
 	// What the engine minted is as secret as what it was given.
 	g.secrets = append(g.secrets, engine.Endpoint{Credentials: plan.Credentials}.Secrets()...)
 
 	var ownedPSK []byte
 	if gateway.OwnsPSKSecret(sr) {
-		ownedPSK = []byte(psk)
+		ownedPSK = []byte(in.psk)
 	}
 	objs, err := gateway.Render(gateway.Input{
-		Instance: sr, Config: r.config.Gateway, Image: dec.Image, Plan: plan, PSK: ownedPSK,
+		Instance: sr, Config: r.config.Gateway, Image: d.Image, Plan: plan, PSK: ownedPSK,
 	})
+	return plan, objs, err
+}
+
+// imageObjects are the disk and the seed among the objects, which are what depends
+// on the image.
+func imageObjects(objs []client.Object, n gateway.Names) []client.Object {
+	var out []client.Object
+	for _, o := range objs {
+		if o.GetName() == n.BootDisk || o.GetName() == n.CloudInit {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// makeGateway makes the objects of the gateway exist, moves it to another image
+// when it is to move, and reads how it stands. It never returns an error: what
+// went wrong is in the view, so that the pass can still tell the tenant what is
+// wrong with what they declared.
+func (r *Reconciler) makeGateway(ctx context.Context, sr *v1alpha1.SiteRouter, st *v1alpha1.SiteRouterStatus) *gatewayView {
+	g := &gatewayView{}
+	names := gateway.NamesFor(sr.Name)
+	key := client.ObjectKeyFromObject(sr)
+
+	vm, vmi, err := r.readVM(ctx, sr, names.VM)
 	if err != nil {
 		g.fail(err)
 		return g
 	}
-	if err := r.applier.Apply(ctx, sr, objs); err != nil {
+	cur, err := r.current(ctx, sr, vm, vmi)
+	if err != nil {
 		g.fail(err)
 		return g
+	}
+	dec, err := rollout.Decide(r.config, cur, sr.Annotations[v1alpha1.AnnotationUpgradeTo])
+	if err != nil {
+		g.fail(err)
+		return g
+	}
+	r.warnUnsupported(key, dec, g)
+
+	in, err := r.collect(ctx, sr, st, g)
+	if err != nil {
+		g.fail(err)
+		return g
+	}
+
+	// What the gateway runs is what it is made of in this pass. A gateway that is to
+	// move is made of the image it runs until the disk of the other is ready, and
+	// that disk is made beside it.
+	run, phase, message := dec, movePhaseNone, ""
+	if dec.Moving {
+		if run, err = rollout.Stay(r.config, cur); err == nil {
+			phase, message, err = r.planMove(ctx, sr, dec)
+		}
+		if err != nil {
+			g.fail(err)
+			return g
+		}
+	}
+	// A pass that fails after it took a place for a move that is not marked in the
+	// status gives it back, so that a gateway that cannot move does not hold one.
+	failed := func(err error) *gatewayView {
+		g.fail(err)
+		if !moving(sr.Status.Conditions) {
+			r.gate.Release(key)
+		}
+		return g
+	}
+	runNames := names.ForImage(run.Image)
+	arrived := vmi != nil && vmi.running() && vmi.BootDisk == runNames.BootDisk
+	// A gateway that was moving and does not run on the disk it is pointed at is
+	// restarting. A move holds its place until the gateway runs on the new disk, and
+	// the status does not say it runs an image it has not booted on, whichever way it
+	// is going.
+	restarting := moving(sr.Status.Conditions) && !arrived
+	holding := !dec.Moving && restarting
+	if !dec.Moving && !holding {
+		r.gate.Release(key)
+	}
+
+	plan, objs, err := r.render(sr, run, in, g)
+	if err != nil {
+		return failed(err)
+	}
+	if err := r.applier.Apply(ctx, sr, objs); err != nil {
+		return failed(err)
 	}
 	g.objects = true
 
-	digest, err := gateway.ImageDigest(dec.Image)
-	if err != nil {
-		g.fail(err)
-		return g
+	if err := r.advance(ctx, sr, g, vmi, dec, phase, message, in); err != nil {
+		return failed(err)
 	}
-	st.Engine = v1alpha1.EngineStatus{Name: r.config.Engine.Name, Version: dec.Target, ImageDigest: digest}
+	if phase == movePhaseSwap {
+		vmi = nil
+	}
 
+	if !restarting {
+		digest, err := gateway.ImageDigest(run.Image)
+		if err != nil {
+			return failed(err)
+		}
+		// It is a move that is completed when the gateway runs another image than the
+		// status knew; one that is given up on, by taking the annotation away, is not.
+		moved := moving(sr.Status.Conditions) && digest != sr.Status.Engine.ImageDigest
+		st.Engine = v1alpha1.EngineStatus{Name: r.config.Engine.Name, Version: run.Target, ImageDigest: digest}
+		if moved {
+			g.completed = true
+			g.notes = append(g.notes, note{
+				eventType: corev1.EventTypeNormal, reason: eventUpgradeCompleted,
+				message: fmt.Sprintf("the gateway runs version %s", run.Target),
+			})
+		}
+		if !dec.Moving && arrived {
+			if err := r.cleanup(ctx, sr, runNames); err != nil {
+				logf.FromContext(ctx).Error(err, "removing what the gateway no longer runs from")
+				g.retry = errors.Join(g.retry, err)
+			}
+		}
+	}
+	if holding {
+		g.pending(v1alpha1.ReasonUpgrading, fmt.Sprintf("restarting on version %s", run.Target))
+	}
+
+	return r.observe(ctx, sr, st, g, in, plan, vmi)
+}
+
+// advance does the step of a move that the phase calls for.
+func (r *Reconciler) advance(ctx context.Context, sr *v1alpha1.SiteRouter, g *gatewayView, vmi *vmiFacts, dec rollout.Decision, phase movePhase, message string, in inputs) error {
+	switch phase {
+	case movePhaseNone:
+		return nil
+	case movePhaseWaiting:
+		g.waiting = true
+		return nil
+	case movePhaseFailed:
+		g.info(v1alpha1.ReasonUpgradeFailed, message)
+		return nil
+	}
+
+	newNames := gateway.NamesFor(sr.Name).ForImage(dec.Image)
+	_, objs, err := r.render(sr, dec, in, g)
+	if err != nil {
+		return err
+	}
+	if phase == movePhaseImporting {
+		if err := r.applier.Apply(ctx, sr, imageObjects(objs, newNames)); err != nil {
+			return err
+		}
+		g.info(v1alpha1.ReasonUpgrading, message)
+		return nil
+	}
+	if err := r.applier.Apply(ctx, sr, objs); err != nil {
+		return err
+	}
+	if err := r.boot(ctx, sr, vmi, newNames.BootDisk); err != nil {
+		return err
+	}
+	g.pending(v1alpha1.ReasonUpgrading, message)
+	return nil
+}
+
+// observe reads how a gateway that has its objects stands: the address of the tunnel
+// and the instance of the VM.
+func (r *Reconciler) observe(ctx context.Context, sr *v1alpha1.SiteRouter, st *v1alpha1.SiteRouterStatus, g *gatewayView, in inputs, plan engine.BootstrapPlan, vmi *vmiFacts) *gatewayView {
 	svc := &corev1.Service{}
-	if err := r.reader.Get(ctx, client.ObjectKey{Namespace: sr.Namespace, Name: names.Tunnel}, svc); err != nil && !apierrors.IsNotFound(err) {
+	if err := r.reader.Get(ctx, client.ObjectKey{Namespace: sr.Namespace, Name: gateway.NamesFor(sr.Name).Tunnel}, svc); err != nil && !apierrors.IsNotFound(err) {
 		g.fail(err)
 		return g
 	}
 	g.tunnelAddress = tunnelAddress(svc)
 	st.TunnelAddress = g.tunnelAddress
-	g.psk = psk
+	g.psk = in.psk
 
-	vmi, err := r.readVMI(ctx, sr, names.VM)
-	if err != nil {
-		g.fail(err)
-		return g
-	}
 	switch {
 	case vmi == nil:
 		g.pending(v1alpha1.ReasonGatewayPending, "the gateway VM has not started yet")
@@ -493,19 +686,10 @@ func (r *Reconciler) makeGateway(ctx context.Context, sr *v1alpha1.SiteRouter, s
 	if g.tunnelAddress == "" {
 		g.pending(v1alpha1.ReasonTunnelAddressPending, "the load balancer has not given the tunnel an address yet")
 	}
-	if pskPending != "" {
-		g.pending(v1alpha1.ReasonPSKSecretPending, pskPending)
+	if in.pskPending != "" {
+		g.pending(v1alpha1.ReasonPSKSecretPending, in.pskPending)
 	}
 	return g
-}
-
-// decide returns the image the gateway is to run.
-func (r *Reconciler) decide(sr *v1alpha1.SiteRouter) (rollout.Decision, error) {
-	cur := rollout.Current{Version: sr.Status.Engine.Version, Digest: sr.Status.Engine.ImageDigest}
-	// A gateway stays on the image it was made with: moving it is not done yet.
-	cfg := r.config
-	cfg.Upgrade.Policy = config.UpgradeAnnotation
-	return rollout.Decide(cfg, cur, "")
 }
 
 // preSharedKey returns the pre-shared key of the tunnel and the name of the Secret
@@ -604,6 +788,9 @@ func (r *revisions) forget(key types.NamespacedName) {
 func (r *Reconciler) forget(key types.NamespacedName) {
 	r.revisions.forget(key)
 	r.gate.Release(key)
+	r.unsupportedMu.Lock()
+	delete(r.unsupported, key)
+	r.unsupportedMu.Unlock()
 	if r.metrics != nil {
 		r.metrics.forget(key)
 	}

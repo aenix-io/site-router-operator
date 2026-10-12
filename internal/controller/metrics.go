@@ -42,7 +42,18 @@ type Metrics struct {
 	condition *prometheus.GaugeVec
 	tunnelUp  *prometheus.GaugeVec
 	image     *prometheus.GaugeVec
+	waiting   *prometheus.GaugeVec
+
+	inProgress prometheus.Gauge
+	upgrades   *prometheus.CounterVec
 }
+
+// Results of a move to another image, as the metrics say them.
+const (
+	resultStarted   = "started"
+	resultCompleted = "completed"
+	resultFailed    = "failed"
+)
 
 // NewMetrics registers the metrics with reg.
 func NewMetrics(reg prometheus.Registerer) *Metrics {
@@ -64,7 +75,19 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Help: "The engine, version and image digest the gateway runs. The value is always 1.",
 		}, []string{labelNamespace, labelName, "engine", "version", "digest"}),
 	}
-	reg.MustRegister(m.ready, m.condition, m.tunnelUp, m.image)
+	m.waiting = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "site_router_upgrade_waiting",
+		Help: "1 when the gateway is to move to another image and has not been given a place yet, 0 when it is not.",
+	}, []string{labelNamespace, labelName})
+	m.inProgress = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "site_router_upgrades_in_progress",
+		Help: "How many gateways are moving to another image, which is at most the number the configuration allows.",
+	})
+	m.upgrades = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "site_router_upgrades_total",
+		Help: "Moves of a gateway to another image, by how far they got: started, completed or failed.",
+	}, []string{"result"})
+	reg.MustRegister(m.ready, m.condition, m.tunnelUp, m.image, m.waiting, m.inProgress, m.upgrades)
 	return m
 }
 
@@ -76,6 +99,8 @@ type observation struct {
 	tunnels map[string]engine.TunnelState
 	// wanted is the tunnels that are asked for.
 	wanted []string
+	// waiting is true when the gateway is to move and has no place yet.
+	waiting bool
 }
 
 // observe sets the series of a SiteRouter to what a pass found.
@@ -105,6 +130,12 @@ func (m *Metrics) observe(key types.NamespacedName, o observation) {
 	}
 	m.tunnelUp.With(l).Set(up)
 
+	waiting := 0.0
+	if o.waiting {
+		waiting = 1
+	}
+	m.waiting.With(l).Set(waiting)
+
 	m.image.DeletePartialMatch(l)
 	if o.engine.Version != "" {
 		m.image.With(prometheus.Labels{
@@ -121,4 +152,11 @@ func (m *Metrics) forget(key types.NamespacedName) {
 	m.condition.DeletePartialMatch(l)
 	m.tunnelUp.DeletePartialMatch(l)
 	m.image.DeletePartialMatch(l)
+	m.waiting.DeletePartialMatch(l)
 }
+
+// moving sets how many gateways are moving.
+func (m *Metrics) moving(n int) { m.inProgress.Set(float64(n)) }
+
+// upgraded counts a move that started, completed or failed.
+func (m *Metrics) upgraded(result string) { m.upgrades.WithLabelValues(result).Inc() }

@@ -55,26 +55,30 @@ type vmiFacts struct {
 
 func (f vmiFacts) running() bool { return f.Phase == phaseActive && f.IP != "" }
 
-// readVMI reads the instance of the gateway VM, or returns nil when there is none.
-// An instance is the gateway's only when the VirtualMachine that is the SiteRouter's
-// own controls it, by its UID: the management credentials go to the address it
-// reports, so one that someone else made under the name, with an owner that has
-// the right kind and name, is not taken for it. What the check does not stop is
-// someone who has read the UID of the VM and can make instances, which is the
-// limit the ownership of the other objects has too.
-func (r *Reconciler) readVMI(ctx context.Context, sr *v1alpha1.SiteRouter, name string) (*vmiFacts, error) {
+// readVM reads the VM of the gateway, which is nil when there is none or when it
+// is not the SiteRouter's own, and the instance KubeVirt made for it, which is nil
+// when there is none. An instance is the gateway's only when the VM controls it, by
+// its UID: the management credentials go to the address it reports, so one that
+// someone else made under the name, with an owner that has the right kind and
+// name, is not taken for it. What the check does not stop is someone who has read
+// the UID of the VM and can make instances, which is the limit the ownership of
+// the other objects has too.
+func (r *Reconciler) readVM(ctx context.Context, sr *v1alpha1.SiteRouter, name string) (*unstructured.Unstructured, *vmiFacts, error) {
 	vm, err := r.getObject(ctx, gateway.VirtualMachineGVK, sr.Namespace, name)
 	if err != nil || vm == nil || !metav1.IsControlledBy(vm, sr) {
-		return nil, err
+		return nil, nil, err
 	}
 	u, err := r.getObject(ctx, gateway.VirtualMachineInstanceGVK, sr.Namespace, name)
-	if err != nil || u == nil {
-		return nil, err
+	if err != nil || u == nil || !madeByVM(u, vm) {
+		return vm, nil, err
 	}
-	if !madeByVM(u, vm) {
-		return nil, nil
-	}
-	return vmiFactsOf(u), nil
+	return vm, vmiFactsOf(u), nil
+}
+
+// bootDiskOfVM is the DataVolume the VM boots from.
+func bootDiskOfVM(vm *unstructured.Unstructured) string {
+	volumes, _, _ := unstructured.NestedSlice(vm.Object, "spec", "template", "spec", "volumes")
+	return bootDiskOf(volumes)
 }
 
 // madeByVM says whether the object is controlled by the VirtualMachine, which is

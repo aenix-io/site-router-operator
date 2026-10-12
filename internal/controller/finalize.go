@@ -93,14 +93,38 @@ func (r *Reconciler) finalize(ctx context.Context, sr *v1alpha1.SiteRouter) (ctr
 // metrics.
 func (r *Reconciler) publish(sr *v1alpha1.SiteRouter, before []metav1.Condition, out outcome) {
 	r.emit(sr, before, out.status.Conditions)
-	if r.metrics != nil {
-		r.metrics.observe(client.ObjectKeyFromObject(sr), observation{
-			conditions: out.status.Conditions,
-			engine:     out.status.Engine,
-			tunnels:    out.tunnels,
-			wanted:     out.wanted,
-		})
+	for _, n := range out.notes {
+		r.event(sr, n.eventType, n.reason, actionUpgrade, n.message)
 	}
+	if r.metrics == nil {
+		return
+	}
+	r.metrics.observe(client.ObjectKeyFromObject(sr), observation{
+		conditions: out.status.Conditions,
+		engine:     out.status.Engine,
+		tunnels:    out.tunnels,
+		wanted:     out.wanted,
+		waiting:    out.waiting,
+	})
+	r.metrics.moving(r.gate.Moving())
+	was, is := reasonOf(before), reasonOf(out.status.Conditions)
+	switch {
+	case is == v1alpha1.ReasonUpgrading && was != v1alpha1.ReasonUpgrading:
+		r.metrics.upgraded(resultStarted)
+	case is == v1alpha1.ReasonUpgradeFailed && was != v1alpha1.ReasonUpgradeFailed:
+		r.metrics.upgraded(resultFailed)
+	}
+	if out.completed {
+		r.metrics.upgraded(resultCompleted)
+	}
+}
+
+// reasonOf is the reason GatewayReady gives, or none.
+func reasonOf(conds []metav1.Condition) string {
+	if c := meta.FindStatusCondition(conds, v1alpha1.ConditionGatewayReady); c != nil {
+		return c.Reason
+	}
+	return ""
 }
 
 // progress are the reasons of a condition that is not met yet because something
@@ -129,6 +153,10 @@ func (r *Reconciler) emit(sr *v1alpha1.SiteRouter, before, after []metav1.Condit
 		case c.Type == v1alpha1.ConditionReady && c.Status == metav1.ConditionTrue:
 			r.event(sr, corev1.EventTypeNormal, "Ready", actionReconcile, "the gateway is ready")
 		case c.Type == v1alpha1.ConditionReady, c.Type == v1alpha1.ConditionTunnelEstablished:
+		case c.Type == v1alpha1.ConditionGatewayReady && c.Reason == v1alpha1.ReasonUpgrading:
+			r.event(sr, corev1.EventTypeNormal, eventUpgradeStarted, actionUpgrade, c.Message)
+		case c.Type == v1alpha1.ConditionGatewayReady && c.Reason == v1alpha1.ReasonUpgradeFailed:
+			r.event(sr, corev1.EventTypeWarning, c.Reason, actionUpgrade, c.Message)
 		case c.Status == metav1.ConditionFalse && !slices.Contains(progress, c.Reason):
 			r.event(sr, corev1.EventTypeWarning, c.Reason, actionReconcile, c.Type+": "+c.Message)
 		}

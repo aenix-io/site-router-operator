@@ -16,7 +16,9 @@ rules:
   - secrets
   verbs:
   - create
+  - delete
   - get
+  - list
 - apiGroups:
   - ""
   resources:
@@ -33,7 +35,9 @@ rules:
   - datavolumes
   verbs:
   - create
+  - delete
   - get
+  - list
 - apiGroups:
   - cilium.io
   resources:
@@ -54,6 +58,7 @@ rules:
   resources:
   - virtualmachineinstances
   verbs:
+  - delete
   - get
   - list
   - watch

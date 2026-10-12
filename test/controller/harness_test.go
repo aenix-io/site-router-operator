@@ -22,6 +22,7 @@ package controller_test
 
 import (
 	"context"
+	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -35,10 +36,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/aenix-io/site-router-operator/api/engine"
 	"github.com/aenix-io/site-router-operator/api/engine/enginetest/cmdfake"
@@ -54,14 +57,19 @@ import (
 var k8sClient client.Client
 
 func TestMain(m *testing.M) {
+	// The reconciler logs through the logger of the context, which a test does not set.
+	ctrl.SetLogger(zap.New(zap.WriteTo(io.Discard)))
 	testenv.Main(m, func(c client.Client) { k8sClient = c }, "../gateway/crds")
 }
 
 var (
-	epoch = time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	// The clock of the tests starts at the time of the machine, since the apiserver
+	// stamps what it makes with its own, and a disk is as old as that stamp says.
+	epoch = time.Now().UTC().Truncate(time.Second)
 
 	imageV1  = "registry.example/appliances/gateway-disk:1.0.0@sha256:" + strings.Repeat("a1", 32)
 	imageV2  = "registry.example/appliances/gateway-disk:2.0.0@sha256:" + strings.Repeat("b2", 32)
+	digestV1 = "sha256:" + strings.Repeat("a1", 32)
 	digestV2 = "sha256:" + strings.Repeat("b2", 32)
 )
 
@@ -101,9 +109,11 @@ type spy struct {
 	// failBootstrap makes the engine refuse to make a seed, with the error it gives.
 	failBootstrap func(engine.BootstrapRequest) error
 	applied       []engine.Desired
-	endpoints     []engine.Endpoint
-	forceGuard    *engine.GuardState
-	failConfirm   error
+	// prevs are the revisions the engine was told the guest had when it was asked to apply.
+	prevs       []string
+	endpoints   []engine.Endpoint
+	forceGuard  *engine.GuardState
+	failConfirm error
 }
 
 func (s *spy) Bootstrap(r engine.BootstrapRequest) (engine.BootstrapPlan, error) {
@@ -138,6 +148,7 @@ type spySession struct {
 
 func (x spySession) Apply(ctx context.Context, d engine.Desired, prev string) (engine.Applied, error) {
 	x.s.mu.Lock()
+	x.s.prevs = append(x.s.prevs, prev)
 	x.s.applied = append(x.s.applied, d)
 	x.s.mu.Unlock()
 	return x.Session.Apply(ctx, d, prev)
@@ -164,6 +175,13 @@ func (s *spy) last() (engine.Desired, int) {
 		return engine.Desired{}, 0
 	}
 	return s.applied[len(s.applied)-1], len(s.applied)
+}
+
+// revisions are the revisions the engine was told the guest had, in the order it was asked.
+func (s *spy) revisions() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.prevs)
 }
 
 func (s *spy) lastEndpoint() engine.Endpoint {
@@ -276,8 +294,14 @@ type rig struct {
 	disc *flaky
 	now  time.Time
 	cfg  config.Config
+	// name is the SiteRouter the rig acts on, which is the one it made unless it is a sibling.
+	name string
 	// writes is the client of the reconciler, which counts what it writes.
 	writes *counting
+	// vmiDisk is the disk the next instance boots from when it is not the one the VM
+	// says, as it is when the VM was pointed at another disk and the instance was
+	// not made again.
+	vmiDisk string
 }
 
 // newRig makes a namespace with a SiteRouter, which has a peer and one remote
@@ -305,12 +329,31 @@ func newRig(t *testing.T, mutate ...func(*config.Config, *v1alpha1.SiteRouter)) 
 	}
 	mustCreate(t, sr)
 
-	g := &rig{t: t, ns: ns.Name, now: epoch, dev: cmdfake.NewDevice(), rec: events.NewFakeRecorder(1000)}
+	g := &rig{t: t, ns: ns.Name, name: name, now: epoch, dev: cmdfake.NewDevice(), rec: events.NewFakeRecorder(1000)}
 	g.spy = &spy{Engine: cmdfake.Engine{Dev: g.dev}}
 	g.conn = &fakeconnector.Connector{Client: k8sClient}
 	g.disc = &flaky{Reader: k8sClient}
 	g.build(cfg)
+	t.Cleanup(g.forgetSiteRouters)
 	return g
+}
+
+// forgetSiteRouters deletes the SiteRouters of the namespace without the operator,
+// which is not there to let them go. The apiserver of the tests is shared by every
+// test, and a SiteRouter that was left moving would be read by the next operator as
+// a place that is taken.
+func (g *rig) forgetSiteRouters() {
+	ctx := context.Background()
+	list := &v1alpha1.SiteRouterList{}
+	if err := k8sClient.List(ctx, list, client.InNamespace(g.ns)); err != nil {
+		return
+	}
+	for i := range list.Items {
+		sr := &list.Items[i]
+		sr.Finalizers = nil
+		_ = k8sClient.Update(ctx, sr)
+		_ = k8sClient.Delete(ctx, sr)
+	}
 }
 
 // build makes the reconciler for a configuration.
@@ -357,9 +400,9 @@ func mustCreate(t *testing.T, o client.Object) {
 	}
 }
 
-func (g *rig) key() client.ObjectKey { return client.ObjectKey{Namespace: g.ns, Name: name} }
+func (g *rig) key() client.ObjectKey { return client.ObjectKey{Namespace: g.ns, Name: g.name} }
 
-func (g *rig) names() gateway.Names { return gateway.NamesFor(name) }
+func (g *rig) names() gateway.Names { return gateway.NamesFor(g.name) }
 
 // reconcileErr runs a pass, and returns what it returns.
 func (g *rig) reconcileErr() (ctrl.Result, error) {
@@ -441,6 +484,9 @@ func (g *rig) pod(podName string, labels map[string]string, ip string) {
 // tenantPod makes a pod of the tenant.
 func (g *rig) tenantPod() {
 	g.t.Helper()
+	if err := k8sClient.Get(g.t.Context(), client.ObjectKey{Namespace: g.ns, Name: "web-0"}, &corev1.Pod{}); err == nil {
+		return
+	}
 	g.pod("web-0", map[string]string{"app": "web"}, webIP)
 }
 
@@ -466,6 +512,13 @@ func (g *rig) bootOwnedBy(phase string, address bool, ownerUID types.UID) {
 		g.t.Fatalf("the VM of the gateway: %v", err)
 	}
 	volumes, _, _ := unstructured.NestedSlice(vm.Object, "spec", "template", "spec", "volumes")
+	if g.vmiDisk != "" {
+		for _, v := range volumes {
+			if m, ok := v.(map[string]any); ok && m["name"] == "boot" {
+				m["dataVolume"] = map[string]any{"name": g.vmiDisk}
+			}
+		}
+	}
 
 	yes := true
 	if ownerUID == "" {
@@ -475,7 +528,7 @@ func (g *rig) bootOwnedBy(phase string, address bool, ownerUID types.UID) {
 	vmi.SetGroupVersionKind(gateway.VirtualMachineInstanceGVK)
 	vmi.SetName(g.names().VM)
 	vmi.SetNamespace(g.ns)
-	vmi.SetLabels(gateway.Labels(name))
+	vmi.SetLabels(gateway.Labels(g.name))
 	vmi.SetOwnerReferences([]metav1.OwnerReference{{
 		APIVersion: "kubevirt.io/v1", Kind: "VirtualMachine", Name: vm.GetName(), UID: ownerUID, Controller: &yes,
 	}})
@@ -494,7 +547,7 @@ func (g *rig) bootOwnedBy(phase string, address bool, ownerUID types.UID) {
 		g.t.Fatal(err)
 	}
 
-	g.pod("virt-launcher-"+g.names().VM, gateway.Labels(name), gatewayIP)
+	g.pod("virt-launcher-"+g.names().VM, gateway.Labels(g.name), gatewayIP)
 
 	if !address {
 		return
@@ -572,5 +625,146 @@ func (g *rig) events() []string {
 		default:
 			return out
 		}
+	}
+}
+
+// sibling is another SiteRouter in the same namespace, which the same reconciler
+// looks after. Its networks are its own, since the connector gives a network to
+// the first Forwarder that asks for it.
+func (g *rig) sibling(siblingName, remote string) *rig {
+	g.t.Helper()
+	sr := &v1alpha1.SiteRouter{
+		Name:      siblingName,
+		Namespace: g.ns,
+		Spec: v1alpha1.SiteRouterSpec{
+			Peer:        v1alpha1.Peer{Address: "203.0.113.20"},
+			RemoteCIDRs: []v1alpha1.IPv4CIDR{v1alpha1.IPv4CIDR(remote)},
+		},
+	}
+	mustCreate(g.t, sr)
+	s := *g
+	s.name = siblingName
+	return &s
+}
+
+// setDV says what phase the importer has a disk in.
+func (g *rig) setDV(diskName, phase string) {
+	g.t.Helper()
+	dv := &unstructured.Unstructured{}
+	dv.SetGroupVersionKind(gateway.DataVolumeGVK)
+	if err := k8sClient.Get(g.t.Context(), client.ObjectKey{Namespace: g.ns, Name: diskName}, dv); err != nil {
+		g.t.Fatalf("the disk %s: %v", diskName, err)
+	}
+	if err := unstructured.SetNestedField(dv.Object, phase, "status", "phase"); err != nil {
+		g.t.Fatal(err)
+	}
+	if err := k8sClient.Status().Update(g.t.Context(), dv); err != nil {
+		g.t.Fatal(err)
+	}
+}
+
+// exists says whether an object of a kind with no Go type is in the cluster.
+func (g *rig) exists(gvk schema.GroupVersionKind, objectName string) bool {
+	g.t.Helper()
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(gvk)
+	err := k8sClient.Get(g.t.Context(), client.ObjectKey{Namespace: g.ns, Name: objectName}, u)
+	if client.IgnoreNotFound(err) != nil {
+		g.t.Fatal(err)
+	}
+	return err == nil
+}
+
+// secretExists says whether a Secret is in the cluster.
+func (g *rig) secretExists(secretName string) bool {
+	g.t.Helper()
+	err := k8sClient.Get(g.t.Context(), client.ObjectKey{Namespace: g.ns, Name: secretName}, &corev1.Secret{})
+	if client.IgnoreNotFound(err) != nil {
+		g.t.Fatal(err)
+	}
+	return err == nil
+}
+
+// bootsFrom is the disk the VM is pointed at.
+func (g *rig) bootsFrom() string {
+	g.t.Helper()
+	vm := &unstructured.Unstructured{}
+	vm.SetGroupVersionKind(gateway.VirtualMachineGVK)
+	if err := k8sClient.Get(g.t.Context(), client.ObjectKey{Namespace: g.ns, Name: g.names().VM}, vm); err != nil {
+		g.t.Fatal(err)
+	}
+	volumes, _, _ := unstructured.NestedSlice(vm.Object, "spec", "template", "spec", "volumes")
+	for _, v := range volumes {
+		if m, ok := v.(map[string]any); ok && m["name"] == "boot" {
+			n, _, _ := unstructured.NestedString(m, "dataVolume", "name")
+			return n
+		}
+	}
+	return ""
+}
+
+// reboot plays KubeVirt booting the VM again, after the operator has deleted its
+// instance: the instance and its pod are made anew from what the VM says.
+func (g *rig) reboot() {
+	g.t.Helper()
+	pod := &corev1.Pod{Name: "virt-launcher-" + g.names().VM, Namespace: g.ns}
+	if err := client.IgnoreNotFound(k8sClient.Delete(g.t.Context(), pod)); err != nil {
+		g.t.Fatal(err)
+	}
+	g.bootAs("Running", false)
+}
+
+// upgrades reads how many moves of a gateway the operator has counted with a result.
+func (g *rig) upgrades(result string) float64 {
+	g.t.Helper()
+	families, err := g.reg.Gather()
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	for _, f := range families {
+		if f.GetName() != "site_router_upgrades_total" {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "result" && l.GetValue() == result {
+					return m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// diskOf names the boot disk and the seed of the image of a version.
+func diskOf(siteRouter, image string) (disk, seed string) {
+	n := gateway.NamesFor(siteRouter).ForImage(image)
+	return n.BootDisk, n.CloudInit
+}
+
+// follow has a sibling use the reconciler that the rig has now, which is another
+// after the operator has started again.
+func (g *rig) follow(of *rig) { g.r, g.reg = of.r, of.reg }
+
+// wipeStatus forgets what the SiteRouter remembers of the gateway, as a status
+// that was lost would.
+func (g *rig) wipeStatus() {
+	g.t.Helper()
+	sr := g.sr()
+	sr.Status = v1alpha1.SiteRouterStatus{}
+	if err := k8sClient.Status().Update(g.t.Context(), sr); err != nil {
+		g.t.Fatal(err)
+	}
+}
+
+// deleteObject deletes an object of a kind that has no Go type, if it is there.
+func (g *rig) deleteObject(gvk schema.GroupVersionKind, objectName string) {
+	g.t.Helper()
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(gvk)
+	u.SetName(objectName)
+	u.SetNamespace(g.ns)
+	if err := client.IgnoreNotFound(k8sClient.Delete(g.t.Context(), u)); err != nil {
+		g.t.Fatal(err)
 	}
 }
