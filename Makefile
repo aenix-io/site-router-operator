@@ -128,6 +128,16 @@ CHART_DIR ?= charts/site-router-operator
 helm-lint: ## Lint the operator chart with every value set in its ci directory.
 	for f in $(CHART_DIR)/ci/*-values.yaml; do echo "== $$f"; helm lint --strict $(CHART_DIR) --values "$$f" || exit 1; done
 
+# helm-unittest runs from its image, which carries the Helm it was built with, so
+# that the suites run the same here and in CI whatever Helm is installed. It makes
+# a directory for snapshots in tests/ even when there are none, so it runs as the
+# user who owns the tree.
+HELM_UNITTEST_IMAGE ?= docker.io/helmunittest/helm-unittest:4.3.0-1.2.1@sha256:28ea86c3e0b07f501f0c2e9c08b9f41e240f4a4b571cb5106b36cf0f0607e989
+
+.PHONY: helm-unittest
+helm-unittest: ## Run the helm-unittest suites of the operator chart.
+	$(CONTAINER_TOOL) run --rm --user "$$(id -u):$$(id -g)" -e HOME=/tmp -v "$(CURDIR)/$(CHART_DIR):/apps" $(HELM_UNITTEST_IMAGE) --strict .
+
 ##@ Build
 
 # The package is built, not cmd/main.go alone: the engines are imported in

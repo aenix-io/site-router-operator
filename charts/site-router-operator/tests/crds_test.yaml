@@ -1,0 +1,49 @@
+suite: the CRDs
+templates:
+  - templates/crds.yaml
+release:
+  name: srop
+  namespace: site-router-system
+values:
+  - ../ci/minimal-values.yaml
+tests:
+  - it: installs the CRDs of SiteRouter and Forwarder and keeps them
+    asserts:
+      - hasDocuments:
+          count: 2
+      - isKind:
+          of: CustomResourceDefinition
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep
+      - equal:
+          path: metadata.labels["app.kubernetes.io/managed-by"]
+          value: Helm
+      - equal:
+          path: spec.group
+          value: siterouter.aenix.io
+
+  - it: installs the CRD of SiteRouter
+    documentSelector:
+      path: metadata.name
+      value: siterouters.siterouter.aenix.io
+    asserts:
+      - equal:
+          path: spec.names.kind
+          value: SiteRouter
+
+  - it: installs the CRD of Forwarder
+    documentSelector:
+      path: metadata.name
+      value: forwarders.siterouter.aenix.io
+    asserts:
+      - equal:
+          path: spec.names.kind
+          value: Forwarder
+
+  - it: installs no CRD for a platform that delivers them
+    set:
+      crds.install: false
+    asserts:
+      - hasDocuments:
+          count: 0

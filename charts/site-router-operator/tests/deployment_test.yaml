@@ -1,0 +1,187 @@
+suite: the Deployment of the operator
+templates:
+  - templates/deployment.yaml
+release:
+  name: srop
+  namespace: site-router-system
+values:
+  - ../ci/minimal-values.yaml
+tests:
+  - it: runs as a non-root user with a read-only root filesystem, no capabilities and the RuntimeDefault seccomp profile
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 65532
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+  - it: runs the image of the version of the chart by default
+    chart:
+      appVersion: 1.2.3
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/aenix-io/site-router-operator:1.2.3
+
+  - it: runs the image of the tag it is given
+    set:
+      image.repository: registry.example/site-router-operator
+      image.tag: dev
+      image.pullPolicy: Always
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.example/site-router-operator:dev
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: Always
+
+  - it: pins the image by its digest when it is given one
+    set:
+      image.tag: 1.2.3
+      image.digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/aenix-io/site-router-operator:1.2.3@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+  - it: refuses a digest that is not one
+    set:
+      image.digest: latest
+    asserts:
+      - failedTemplate:
+          errorPattern: "/image/digest"
+
+  - it: pulls with the secrets it is given
+    set:
+      imagePullSecrets:
+        - name: registry-credentials
+    asserts:
+      - equal:
+          path: spec.template.spec.imagePullSecrets
+          value:
+            - name: registry-credentials
+
+  - it: reads its configuration from the file the ConfigMap is mounted as
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --config=/etc/site-router-operator/config.yaml
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts
+          value:
+            - name: config
+              mountPath: /etc/site-router-operator
+              readOnly: true
+      - equal:
+          path: spec.template.spec.volumes
+          value:
+            - name: config
+              configMap:
+                name: srop-site-router-operator-config
+      - exists:
+          path: spec.template.metadata.annotations["checksum/config"]
+
+  - it: elects a leader by default
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --leader-elect=true
+
+  - it: does not elect a leader when told not to
+    set:
+      leaderElection.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --leader-elect=false
+
+  - it: refuses more than one replica without leader election
+    set:
+      replicaCount: 2
+      leaderElection.enabled: false
+    asserts:
+      - failedTemplate:
+          errorPattern: "needs leaderElection.enabled"
+
+  - it: binds no metrics port while metrics are off
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --metrics-bind-address=0
+      - equal:
+          path: spec.template.spec.containers[0].ports
+          value:
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+
+  - it: serves metrics on their port when they are on
+    set:
+      metrics.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --metrics-bind-address=:8443
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --metrics-secure=true
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: metrics
+            containerPort: 8443
+            protocol: TCP
+
+  - it: probes the health port
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --health-probe-bind-address=:8081
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet
+          value:
+            path: /healthz
+            port: health
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet
+          value:
+            path: /readyz
+            port: health
+
+  - it: passes the flags it is given after its own
+    set:
+      extraArgs:
+        - --zap-devel=false
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args[-1]
+          value: --zap-devel=false
+
+  - it: runs under the service account it is given when it makes none
+    set:
+      serviceAccount.create: false
+      serviceAccount.name: platform-operator
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: platform-operator
+
+  - it: refuses to run under no service account
+    set:
+      serviceAccount.create: false
+    asserts:
+      - failedTemplate:
+          errorPattern: "serviceAccount.name is required"

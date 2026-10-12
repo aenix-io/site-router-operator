@@ -1,0 +1,90 @@
+suite: the rights of the operator
+templates:
+  - templates/clusterrole.yaml
+  - templates/leader-election-rbac.yaml
+release:
+  name: srop
+  namespace: site-router-system
+values:
+  - ../ci/minimal-values.yaml
+tests:
+  - it: lets the controller update the finalizers of a SiteRouter, which it needs to make objects that block the deletion of their owner
+    template: templates/clusterrole.yaml
+    documentSelector:
+      path: kind
+      value: ClusterRole
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - siterouter.aenix.io
+            resources:
+              - siterouters/finalizers
+            verbs:
+              - update
+
+  - it: binds the ClusterRole to the service account of the operator
+    template: templates/clusterrole.yaml
+    documentSelector:
+      path: kind
+      value: ClusterRoleBinding
+    asserts:
+      - equal:
+          path: roleRef.name
+          value: srop-site-router-operator
+      - equal:
+          path: subjects
+          value:
+            - kind: ServiceAccount
+              name: srop-site-router-operator
+              namespace: site-router-system
+
+  - it: grants leader election the Lease and the core events in the namespace of the release, and nothing else
+    template: templates/leader-election-rbac.yaml
+    documentSelector:
+      path: kind
+      value: Role
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: site-router-system
+      - equal:
+          path: rules
+          value:
+            - apiGroups:
+                - coordination.k8s.io
+              resources:
+                - leases
+              verbs:
+                - get
+                - create
+                - update
+            - apiGroups:
+                - ""
+              resources:
+                - events
+              verbs:
+                - create
+                - patch
+
+  - it: binds the Role of leader election to the service account of the operator
+    template: templates/leader-election-rbac.yaml
+    documentSelector:
+      path: kind
+      value: RoleBinding
+    asserts:
+      - equal:
+          path: subjects
+          value:
+            - kind: ServiceAccount
+              name: srop-site-router-operator
+              namespace: site-router-system
+
+  - it: grants nothing for leader election when there is none
+    template: templates/leader-election-rbac.yaml
+    set:
+      leaderElection.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

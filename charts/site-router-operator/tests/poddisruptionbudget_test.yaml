@@ -1,0 +1,37 @@
+suite: the disruption budget of the operator
+templates:
+  - templates/poddisruptionbudget.yaml
+release:
+  name: srop
+  namespace: site-router-system
+values:
+  - ../ci/minimal-values.yaml
+tests:
+  - it: makes none unless asked
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: allows one pod at a time to go by default
+    set:
+      podDisruptionBudget.enabled: true
+    asserts:
+      - equal:
+          path: spec
+          value:
+            maxUnavailable: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: site-router-operator
+                app.kubernetes.io/instance: srop
+
+  - it: keeps as many pods as it is told to, as a number or a share
+    set:
+      podDisruptionBudget.enabled: true
+      podDisruptionBudget.minAvailable: 50%
+    asserts:
+      - equal:
+          path: spec.minAvailable
+          value: 50%
+      - notExists:
+          path: spec.maxUnavailable

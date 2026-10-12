@@ -1,0 +1,148 @@
+suite: the metrics of the operator
+templates:
+  - templates/metrics.yaml
+release:
+  name: srop
+  namespace: site-router-system
+values:
+  - ../ci/minimal-values.yaml
+tests:
+  - it: makes nothing while metrics are off
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: makes the rights of secure metrics and their Service, and no ServiceMonitor unless asked
+    set:
+      metrics.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 4
+
+  - it: lets the operator check the callers of secure metrics, and nothing more
+    set:
+      metrics.enabled: true
+    documentSelector:
+      path: rules[0].apiGroups[0]
+      value: authentication.k8s.io
+    asserts:
+      - isKind:
+          of: ClusterRole
+      - equal:
+          path: metadata.name
+          value: srop-site-router-operator-metrics-auth
+      - equal:
+          path: rules
+          value:
+            - apiGroups:
+                - authentication.k8s.io
+              resources:
+                - tokenreviews
+              verbs:
+                - create
+            - apiGroups:
+                - authorization.k8s.io
+              resources:
+                - subjectaccessreviews
+              verbs:
+                - create
+
+  - it: binds the rights of secure metrics to the service account of the operator
+    set:
+      metrics.enabled: true
+    documentSelector:
+      path: kind
+      value: ClusterRoleBinding
+    asserts:
+      - equal:
+          path: roleRef.name
+          value: srop-site-router-operator-metrics-auth
+      - equal:
+          path: subjects
+          value:
+            - kind: ServiceAccount
+              name: srop-site-router-operator
+              namespace: site-router-system
+
+  - it: makes a ClusterRole for the scraper and binds it to nobody
+    set:
+      metrics.enabled: true
+    documentSelector:
+      path: metadata.name
+      value: srop-site-router-operator-metrics-reader
+    asserts:
+      - isKind:
+          of: ClusterRole
+      - equal:
+          path: rules
+          value:
+            - nonResourceURLs:
+                - /metrics
+              verbs:
+                - get
+
+  - it: publishes secure metrics on a Service of the operator pods
+    set:
+      metrics.enabled: true
+    documentSelector:
+      path: kind
+      value: Service
+    asserts:
+      - equal:
+          path: spec.ports
+          value:
+            - name: https
+              port: 8443
+              targetPort: metrics
+              protocol: TCP
+      - equal:
+          path: spec.selector
+          value:
+            app.kubernetes.io/name: site-router-operator
+            app.kubernetes.io/instance: srop
+
+  - it: grants nothing for plain metrics
+    set:
+      metrics.enabled: true
+      metrics.secure: false
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: Service
+      - equal:
+          path: spec.ports[0].name
+          value: http
+
+  - it: scrapes secure metrics with the token of the scraper
+    set:
+      metrics.enabled: true
+      metrics.serviceMonitor.enabled: true
+      metrics.serviceMonitor.interval: 30s
+    documentSelector:
+      path: kind
+      value: ServiceMonitor
+    asserts:
+      - equal:
+          path: spec.endpoints
+          value:
+            - port: https
+              path: /metrics
+              scheme: https
+              interval: 30s
+              bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+              tlsConfig:
+                insecureSkipVerify: true
+      - equal:
+          path: spec.namespaceSelector.matchNames
+          value:
+            - site-router-system
+
+  - it: refuses a ServiceMonitor with no Service to select
+    set:
+      metrics.enabled: true
+      metrics.service.enabled: false
+      metrics.serviceMonitor.enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "needs metrics.service.enabled"
