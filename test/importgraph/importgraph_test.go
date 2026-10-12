@@ -42,6 +42,9 @@ var forbidden = []string{
 	// Fakes and the conformance suite are for tests. Production code must not
 	// reach an engine implementation, not even a fake.
 	"enginetest",
+	// A connector serves the Forwarder API from the other side, and the operator
+	// knows it only through that API.
+	"site-router-operator/connectors/",
 }
 
 // violations returns the import paths in deps that contain a forbidden substring.
@@ -64,12 +67,14 @@ func TestViolations(t *testing.T) {
 		"github.com/aenix-io/barerouter/engine",
 		"example.com/Some/VyOS-client",
 		"github.com/cozystack/cozystack/internal/lineage",
+		"github.com/aenix-io/site-router-operator/connectors/kube-ovn/internal/grant",
 	}
 	want := []string{
 		"github.com/fluxcd/helm-controller/api/v2",
 		"github.com/aenix-io/barerouter/engine",
 		"example.com/Some/VyOS-client",
 		"github.com/cozystack/cozystack/internal/lineage",
+		"github.com/aenix-io/site-router-operator/connectors/kube-ovn/internal/grant",
 	}
 	if got := violations(deps); !slices.Equal(got, want) {
 		t.Fatalf("violations() = %v, want %v", got, want)
