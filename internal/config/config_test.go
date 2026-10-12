@@ -53,7 +53,7 @@ func TestParseTheSmallestUsableConfiguration(t *testing.T) {
 		t.Errorf("maxConcurrent = %d, want the default 2", cfg.Upgrade.MaxConcurrent)
 	}
 	if cfg.Timing.ForwarderNotResponding.Duration != time.Minute || cfg.Timing.Poll.Duration != 30*time.Second ||
-		cfg.Timing.Discovery.Duration != time.Minute || cfg.Timing.Revalidate.Duration != 5*time.Minute {
+		cfg.Timing.Discovery.Duration != time.Minute || cfg.Upgrade.ImportTimeout.Duration != 30*time.Minute {
 		t.Errorf("timing = %+v, want the defaults", cfg.Timing)
 	}
 	if bs := cfg.Gateway.DataVolume.BlockSize; bs.Logical != 512 || bs.Physical != 4096 {
@@ -72,17 +72,17 @@ func TestParseTheSmallestUsableConfiguration(t *testing.T) {
 
 func TestParseReadsWhatItIsGiven(t *testing.T) {
 	cfg, err := Parse([]byte(minimal + `
-timing: {forwarderNotResponding: 90s, poll: 10s, discovery: 2m, revalidate: 1h}
+timing: {forwarderNotResponding: 90s, poll: 10s, discovery: 2m}
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Timing.ForwarderNotResponding.Duration != 90*time.Second || cfg.Timing.Poll.Duration != 10*time.Second ||
-		cfg.Timing.Discovery.Duration != 2*time.Minute || cfg.Timing.Revalidate.Duration != time.Hour {
+		cfg.Timing.Discovery.Duration != 2*time.Minute {
 		t.Errorf("timing = %+v", cfg.Timing)
 	}
-	cfg, err = Parse([]byte(strings.Replace(minimal, "upgrade: {policy: annotation}", "upgrade: {policy: auto, maxConcurrent: 3}", 1)))
-	if err != nil || cfg.Upgrade.Policy != UpgradeAuto || cfg.Upgrade.MaxConcurrent != 3 {
+	cfg, err = Parse([]byte(strings.Replace(minimal, "upgrade: {policy: annotation}", "upgrade: {policy: auto, maxConcurrent: 3, importTimeout: 1h}", 1)))
+	if err != nil || cfg.Upgrade.Policy != UpgradeAuto || cfg.Upgrade.MaxConcurrent != 3 || cfg.Upgrade.ImportTimeout.Duration != time.Hour {
 		t.Errorf("upgrade = %+v, %v", cfg.Upgrade, err)
 	}
 }
@@ -137,7 +137,7 @@ func TestValidate(t *testing.T) {
 		{"no wait for the connector", func(c *Config) { c.Timing.ForwarderNotResponding.Duration = 0 }, "timing.forwarderNotResponding"},
 		{"a negative poll", func(c *Config) { c.Timing.Poll.Duration = -time.Second }, "timing.poll"},
 		{"no discovery time", func(c *Config) { c.Timing.Discovery.Duration = 0 }, "timing.discovery"},
-		{"no revalidation time", func(c *Config) { c.Timing.Revalidate.Duration = 0 }, "timing.revalidate"},
+		{"no time to import an image", func(c *Config) { c.Upgrade.ImportTimeout.Duration = 0 }, "upgrade.importTimeout"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

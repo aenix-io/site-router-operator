@@ -92,6 +92,10 @@ type Upgrade struct {
 	Policy UpgradePolicy `json:"policy,omitempty"`
 	// MaxConcurrent is how many gateways move at once. It defaults to 2.
 	MaxConcurrent int `json:"maxConcurrent,omitempty"`
+	// ImportTimeout is how long the disk of the other image may take to be made
+	// ready before the move is given up. Giving up leaves the gateway on the image
+	// it had and frees its place. It defaults to 30 minutes.
+	ImportTimeout metav1.Duration `json:"importTimeout,omitzero"`
 }
 
 // Timing is how long the operator waits for, and how often it looks.
@@ -104,33 +108,29 @@ type Timing struct {
 	// its configuration back and to read its tunnels. It defaults to 30 seconds.
 	Poll metav1.Duration `json:"poll,omitzero"`
 	// Discovery is how long the addresses of the nodes and load balancers are kept.
-	// It defaults to a minute.
+	// It defaults to a minute. A gateway is judged against the networks of the
+	// cluster on every pass, so this is also how stale the judgement can be.
 	Discovery metav1.Duration `json:"discovery,omitzero"`
-	// Revalidate is how often a gateway is judged against the networks of the
-	// cluster again when nothing has changed, since they change. It defaults to
-	// five minutes.
-	Revalidate metav1.Duration `json:"revalidate,omitzero"`
 }
 
 // Defaults fill in what a file leaves out.
 const (
-	defaultMaxConcurrent  = 2
-	defaultNotResponding  = time.Minute
-	defaultPoll           = 30 * time.Second
-	defaultDiscovery      = time.Minute
-	defaultRevalidateTime = 5 * time.Minute
+	defaultMaxConcurrent = 2
+	defaultImportTimeout = 30 * time.Minute
+	defaultNotResponding = time.Minute
+	defaultPoll          = 30 * time.Second
+	defaultDiscovery     = time.Minute
 )
 
 // Default is the configuration a key left out of the file falls back to.
 func Default() Config {
 	return Config{
 		Gateway: gateway.DefaultConfig(),
-		Upgrade: Upgrade{MaxConcurrent: defaultMaxConcurrent},
+		Upgrade: Upgrade{MaxConcurrent: defaultMaxConcurrent, ImportTimeout: metav1.Duration{Duration: defaultImportTimeout}},
 		Timing: Timing{
 			ForwarderNotResponding: metav1.Duration{Duration: defaultNotResponding},
 			Poll:                   metav1.Duration{Duration: defaultPoll},
 			Discovery:              metav1.Duration{Duration: defaultDiscovery},
-			Revalidate:             metav1.Duration{Duration: defaultRevalidateTime},
 		},
 	}
 }
@@ -188,7 +188,7 @@ func (c Config) Validate() error {
 		"timing.forwarderNotResponding": c.Timing.ForwarderNotResponding,
 		"timing.poll":                   c.Timing.Poll,
 		"timing.discovery":              c.Timing.Discovery,
-		"timing.revalidate":             c.Timing.Revalidate,
+		"upgrade.importTimeout":         c.Upgrade.ImportTimeout,
 	} {
 		if d.Duration <= 0 {
 			add("%s: %s is not a duration above zero", name, d.Duration)
