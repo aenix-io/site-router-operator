@@ -30,3 +30,13 @@ const (
 	// ManagedByValue is the value of LabelManagedBy on what the operator creates.
 	ManagedByValue = "site-router-operator"
 )
+
+// Annotations that tell the operator what to do with a SiteRouter.
+const (
+	// AnnotationUpgradeTo names the version of the image the gateway of the
+	// SiteRouter is to run. It moves the gateway to that version, up or down, and
+	// keeps it there; in either upgrade policy it comes before the policy. A
+	// version that is not listed by the operator is not run, and the gateway
+	// stays as it is.
+	AnnotationUpgradeTo = "siterouter.aenix.io/upgrade-to"
+)
