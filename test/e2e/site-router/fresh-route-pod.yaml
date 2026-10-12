@@ -1,0 +1,12 @@
+# A workload of the tenant made after the routes are programmed. The network
+# gives it the routes when it is created, with nothing done by hand.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: site-router-fresh-probe
+  labels:
+    app: site-router-fresh-probe
+spec:
+  containers:
+    - name: pause
+      image: registry.k8s.io/pause:3.9

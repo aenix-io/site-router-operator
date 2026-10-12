@@ -1,0 +1,21 @@
+apiVersion: chainsaw.kyverno.io/v1alpha2
+kind: Configuration
+metadata:
+  name: site-router-e2e
+spec:
+  # Chainsaw makes a namespace for the test and deletes it afterwards, so the
+  # suite needs nothing of the cluster but the operator, a connector for its
+  # network and the platform pieces a gateway runs on.
+  execution:
+    parallel: 1
+  timeouts:
+    apply: 1m
+    assert: 5m
+    # Deleting a gateway waits for its finalizer, which withdraws the routes
+    # before the objects go.
+    delete: 5m
+    cleanup: 5m
+    error: 5m
+    exec: 5m
+  cleanup:
+    skipDelete: false

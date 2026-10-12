@@ -1,0 +1,14 @@
+# A workload of the tenant that exists before the routes do. The network gives a
+# pod its routes when it is created, so this one never gets them, and the
+# operator is to say so in the condition RoutesProgrammed without touching the
+# pod.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: site-router-pending-probe
+  labels:
+    app: site-router-pending-probe
+spec:
+  containers:
+    - name: pause
+      image: registry.k8s.io/pause:3.9

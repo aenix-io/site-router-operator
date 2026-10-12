@@ -1,0 +1,51 @@
+# The Cilium policies that a tenant namespace of the platform has, which the
+# namespace of a test run has not. They are what the gateway is meant to be
+# installed beside: the policies of the operator that select the gateway close its
+# ingress to the tunnel ports and the operator and add a deny of link-local, and
+# Cilium lets a pod that is selected by a policy with no rule that allows egress
+# send nothing. In a tenant namespace the rules below allow it, and they add to the
+# ingress of the gateway as well: the cluster is let in to every pod, so the
+# management API of the gateway is reachable by a tenant pod and the key is what
+# keeps it out (design.md, the trust model). A suite that ran without them would
+# find the management API closed for a reason a tenant namespace does not give,
+# and could not bring up a tunnel that is dialled from a pod of the cluster.
+#
+# The shapes are those of the policies of the same names in a tenant namespace.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-external-communication
+spec:
+  endpointSelector: {}
+  egress:
+    - toEntities:
+        - world
+  ingress:
+    - fromEntities:
+        - world
+        - cluster
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-internal-communication
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - {}
+  ingress:
+    - fromEndpoints:
+        - {}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-to-dns
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s-app: kube-dns
+            k8s:io.kubernetes.pod.namespace: kube-system

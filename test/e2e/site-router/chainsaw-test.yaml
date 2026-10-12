@@ -1,0 +1,875 @@
+# Acceptance of a gateway on a live cluster: two VMs, the gateway A under test and
+# the remote site B, and the flows between them. It asserts what the operator
+# says in the status of the SiteRouter, the routes and the grant the connector of
+# the network makes, the flows in both directions, the clamp of the TCP MSS, what
+# the withdrawal leaves behind, and, as the gate, the negative-security matrix:
+# every forbidden flow is dropped and the drop is attributed to the guard that
+# made it.
+#
+# It runs by hand against a cluster that has KubeVirt, CDI, kube-ovn with the
+# connector in connectors/kube-ovn, Cilium, a load balancer that serves
+# LoadBalancer Services, and the operator, configured as in README.md. Nothing
+# runs it in CI.
+#
+# One Test and not many: the topology is expensive, two nested VMs and IPsec, so
+# it is brought up once and every assertion runs against it as an ordered step.
+# Chainsaw deletes what it applied at the end, and one catch at the top attaches
+# the diagnostics.
+#
+# Conventions: declarative asserts where the API models the state; reachability
+# only in script steps that stand alone; the events that say a thing is ready
+# come before every script that depends on it; conditions are asserted as a
+# filter that is a list; no numbers in JMESPath.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: site-router
+spec:
+  catch:
+    - events: {}
+    - describe:
+        apiVersion: siterouter.aenix.io/v1alpha1
+        kind: SiteRouter
+        name: a
+    - describe:
+        apiVersion: siterouter.aenix.io/v1alpha1
+        kind: Forwarder
+        name: site-router-a
+    - describe:
+        apiVersion: kubevirt.io/v1
+        kind: VirtualMachineInstance
+        name: site-router-a
+    - describe:
+        apiVersion: kubevirt.io/v1
+        kind: VirtualMachine
+        name: remote-site-b
+    # A stuck reconcile shows in the log of the operator: a remote network that
+    # was refused, a key that is not there yet, a push that failed, a source
+    # filter that is not confirmed. The connector's says why a grant or a route
+    # is missing.
+    - podLogs:
+        namespace: site-router-system
+        selector: app.kubernetes.io/name=site-router-operator
+        tail: 300
+    - podLogs:
+        namespace: site-router-kube-ovn-connector
+        selector: app.kubernetes.io/name=kube-ovn-connector
+        tail: 300
+    # The console of the guest is the one channel into either router that does
+    # not go through its management API, which is what fails when a guest boots
+    # and never answers. For the gateway it is there when the operator is
+    # configured with gateway.vm.logSerialConsole.
+    - description: consoles of the guests
+      script:
+        timeout: 4m
+        content: |
+          set -u
+          for vm in site-router-a remote-site-b; do
+            pod="$(timeout 20 kubectl -n "$NAMESPACE" get pod -l vm.kubevirt.io/name="$vm" \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+            if [ -z "$pod" ]; then
+              echo "== console of $vm: no virt-launcher pod =="
+              continue
+            fi
+            echo "== console of $vm ($pod), the last lines =="
+            timeout 60 kubectl -n "$NAMESPACE" logs "$pod" -c guest-console-log --tail=60 2>&1 || \
+              echo "no guest-console-log container: the console was not being captured"
+          done
+          # A diagnostic must never turn a failed assertion into a failed catch.
+          exit 0
+    - script:
+        content: |
+          kubectl -n "$NAMESPACE" get siterouter,forwarder,datavolume,pvc,vmi,vm,svc,pods -o wide || true
+          echo "-- routes annotation of the namespace --"
+          kubectl get namespace "$NAMESPACE" -o jsonpath='{.metadata.annotations.ovn\.kubernetes\.io/routes}' || true
+          echo
+          echo "-- policies of the gateway --"
+          kubectl -n "$NAMESPACE" get ciliumnetworkpolicy \
+            -l siterouter.aenix.io/instance=a -o wide || true
+  steps:
+    # ── 0. The namespace of a tenant ─────────────────────────────────────────
+    - name: tenant-baseline
+      description: >-
+        Gives the namespace of the run the policies a tenant namespace has, so
+        that the gateway is tested where it is meant to be installed. See
+        tenant-baseline.yaml for what they are and what a run without them gets
+        wrong.
+      try:
+        - apply:
+            file: tenant-baseline.yaml
+
+    # ── 1. Remote site B ─────────────────────────────────────────────────────
+    - name: bring-up-remote-site-b
+      description: >-
+        Boots B, the second router VM that stands in for the external site: the
+        IPsec initiator and the source of the remote traffic. Generous bounds: B
+        imports the appliance disk and cold-boots a nested VM.
+      try:
+        # The reference of the disk is substituted and not written in the manifest
+        # so that B boots the same image as A and a digest is not kept in two
+        # places. It is <repository>@sha256:<digest> without a tag, because CDI
+        # cannot read a reference that carries both.
+        - script:
+            content: |
+              set -eu
+              ref="${APPLIANCE_DISK_REF:-}"
+              case "$ref" in
+                *@sha256:*) ;;
+                *) echo "APPLIANCE_DISK_REF must be <repository>@sha256:<digest> (the image of the gateway, no tag), got '$ref'"; exit 1 ;;
+              esac
+              rendered="$(mktemp)"
+              sed "s|__APPLIANCE_DISK_REF__|${ref}|" remote-site-b.yaml > "$rendered"
+              if grep -q '__APPLIANCE_DISK_REF__' "$rendered"; then
+                echo "substitution failed: the placeholder is still in the manifest"
+                rm -f "$rendered"
+                exit 1
+              fi
+              echo "remote-site-b boots the appliance $ref"
+              kubectl apply -n "$NAMESPACE" -f "$rendered"
+              rm -f "$rendered"
+        - assert:
+            # A clone of the image by CDI and a cold boot of a nested VM.
+            timeout: 8m
+            resource:
+              apiVersion: cdi.kubevirt.io/v1beta1
+              kind: DataVolume
+              metadata:
+                name: remote-site-b-boot
+              status:
+                (conditions[?type == 'Ready']):
+                  - status: "True"
+        - assert:
+            timeout: 6m
+            resource:
+              apiVersion: kubevirt.io/v1
+              kind: VirtualMachine
+              metadata:
+                name: remote-site-b
+              status:
+                (conditions[?type == 'Ready']):
+                  - status: "True"
+        - assert:
+            timeout: 5m
+            resource:
+              apiVersion: kubevirt.io/v1
+              kind: VirtualMachineInstance
+              metadata:
+                name: remote-site-b
+              (status.interfaces[0].ipAddress != null): true
+      # B was applied by `kubectl` in the script above and not by Chainsaw, so
+      # Chainsaw does not know to remove it: left alone it would run on after the
+      # test. The disk objects are named too, so that the wait covers the volume.
+      cleanup:
+        - delete:
+            ref:
+              apiVersion: kubevirt.io/v1
+              kind: VirtualMachine
+              name: remote-site-b
+        - delete:
+            ref:
+              apiVersion: cdi.kubevirt.io/v1beta1
+              kind: DataVolume
+              name: remote-site-b-boot
+        - delete:
+            ref:
+              apiVersion: v1
+              kind: PersistentVolumeClaim
+              name: remote-site-b-boot
+        - delete:
+            ref:
+              apiVersion: v1
+              kind: Secret
+              name: remote-site-b-cloudinit
+
+    # ── 2. A pod that exists before the routes ───────────────────────────────
+    - name: create-pending-route-pod
+      description: >-
+        Makes a workload of the tenant before A programs the routes. The network
+        gives routes to a pod when it is created, so this one stays without them
+        and the operator has to say so.
+      try:
+        - apply:
+            file: pending-route-pod.yaml
+        - assert:
+            timeout: 2m
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: site-router-pending-probe
+              status:
+                phase: Running
+
+    # ── 3. Gateway A: apply, status, objects ─────────────────────────────────
+    - name: apply-site-router-a
+      try:
+        - apply:
+            file: siterouter-a.yaml
+
+    - name: assert-a-configured
+      description: >-
+        The SiteRouter says that its remote network was admitted, that the
+        gateway runs, and that the configuration was pushed and the source filter
+        confirmed. With no peer address there is no tunnel in the configuration
+        yet, which is the state the validation says in its reason. 8m covers the
+        import of the image, the cold boot and the first push; a slower path is a
+        regression, not a flake to widen.
+      try:
+        - assert:
+            timeout: 8m
+            resource:
+              apiVersion: siterouter.aenix.io/v1alpha1
+              kind: SiteRouter
+              metadata:
+                name: a
+              status:
+                (conditions[?type == 'Validated']):
+                  - status: "True"
+                    reason: PeerNotConfigured
+                (conditions[?type == 'GatewayReady']):
+                  - status: "True"
+                (conditions[?type == 'Configured']):
+                  - status: "True"
+
+    - name: assert-a-objects
+      description: >-
+        The boot disk, the VM, the instance with its address and the address of
+        the tunnel. The disk is named after the image, so it is found by the label
+        of the disk, which is not the label the pods of the gateway are found by:
+        CDI gives the pod that imports the disk the labels of the disk, and a pod
+        with the label of the gateway is cut off from the registry by the policies
+        of the gateway.
+      try:
+        - assert:
+            timeout: 4m
+            resource:
+              apiVersion: cdi.kubevirt.io/v1beta1
+              kind: DataVolume
+              metadata:
+                labels:
+                  siterouter.aenix.io/boot-disk-of: a
+              status:
+                (conditions[?type == 'Ready']):
+                  - status: "True"
+        - error:
+            resource:
+              apiVersion: cdi.kubevirt.io/v1beta1
+              kind: DataVolume
+              metadata:
+                labels:
+                  siterouter.aenix.io/instance: a
+        - assert:
+            timeout: 5m
+            resource:
+              apiVersion: kubevirt.io/v1
+              kind: VirtualMachine
+              metadata:
+                name: site-router-a
+              status:
+                (conditions[?type == 'Ready']):
+                  - status: "True"
+        - assert:
+            timeout: 5m
+            resource:
+              apiVersion: kubevirt.io/v1
+              kind: VirtualMachineInstance
+              metadata:
+                name: site-router-a
+              (status.interfaces[0].ipAddress != null): true
+        - assert:
+            # ingress[0].ip and not ingress[0]: a load balancer can publish an
+            # entry a moment before its address, and the tunnel needs the address.
+            timeout: 4m
+            resource:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: site-router-a-tunnel
+              (status.loadBalancer.ingress[0].ip != null): true
+        - assert:
+            timeout: 2m
+            resource:
+              apiVersion: siterouter.aenix.io/v1alpha1
+              kind: SiteRouter
+              metadata:
+                name: a
+              status:
+                (tunnelAddress != null): true
+                engine:
+                  (version != null): true
+                  (imageDigest != null): true
+
+    # ── 4. The probe host ────────────────────────────────────────────────────
+    - name: create-probe-driver
+      description: >-
+        The reachability, MSS and negative-security scripts drive their probes
+        from B's guest, and read the firewall counters of A, through this pod
+        (see _probe-lib.sh). It is made before the tunnel because that step also
+        configures B through it. Ready means sshpass and curl, the two tools the
+        probes run in the pod, are there.
+      try:
+        - apply:
+            file: probe-driver.yaml
+        - assert:
+            timeout: 3m
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: probe-driver
+                namespace: site-router-system
+              status:
+                phase: Running
+                (containerStatuses[0].ready): true
+
+    # ── 5. The tunnel ────────────────────────────────────────────────────────
+    - name: establish-tunnel
+      description: >-
+        Joins the two ends: A answers, B dials. The peer address of A is set to
+        that of B, and B's IPsec is pushed over its own management API, because
+        it needs the address of the tunnel of A and the address of B, which are
+        known only now. Polls A's security associations over its management API,
+        the same output the operator reads the tunnel from, as the backstop
+        before any reachability script.
+      try:
+        - script:
+            timeout: 16m
+            content: |
+              set -eu
+              # Resolve the four runtime addresses together, retrying until they
+              # are all there: the address of the tunnel, the pod addresses and
+              # the key of the gateway each appear a few seconds after the assert
+              # that waited for their object.
+              rend=$(( $(date +%s) + 180 ))
+              field="${API_KEY_FIELD:-api-key}"
+              while :; do
+                B_IP=$(kubectl -n "$NAMESPACE" get vmi remote-site-b \
+                  -o jsonpath='{.status.interfaces[0].ipAddress}' 2>/dev/null || true)
+                A_VIP=$(kubectl -n "$NAMESPACE" get siterouter a \
+                  -o jsonpath='{.status.tunnelAddress}' 2>/dev/null || true)
+                A_POD_IP=$(kubectl -n "$NAMESPACE" get pod -l vm.kubevirt.io/name=site-router-a \
+                  -o jsonpath='{.items[0].status.podIP}' 2>/dev/null || true)
+                A_TOKEN=$(kubectl -n "$NAMESPACE" get secret site-router-a-api-key \
+                  -o "jsonpath={.data.${field}}" 2>/dev/null | base64 -d 2>/dev/null || true)
+                if [ -n "$B_IP" ] && [ -n "$A_VIP" ] && [ -n "$A_POD_IP" ] && [ -n "$A_TOKEN" ]; then break; fi
+                [ "$(date +%s)" -ge "$rend" ] && { echo "could not resolve the endpoints: B_IP='$B_IP' A_VIP='$A_VIP' A_POD_IP='$A_POD_IP' A_TOKEN_len=${#A_TOKEN}"; exit 1; }
+                sleep 5
+              done
+              PSK=$(kubectl -n "$NAMESPACE" get secret site-router-e2e-psk -o jsonpath='{.data.psk}' | base64 -d)
+              B_KEY=REMOTEB0000000000000000000000000000000B
+              PROBE_NS="${PROBE_NS:-site-router-system}"
+
+              # 1. Tell A where B is. The operator pushes the peer to the gateway
+              #    with B's address, and with the address of the tunnel as its
+              #    own identity.
+              kubectl -n "$NAMESPACE" patch siterouter a --type merge \
+                -p "{\"spec\":{\"peer\":{\"address\":\"${B_IP}\"}}}"
+
+              # 2. Push B's initiator side over its management API: IKEv2 and ESP
+              #    with aes256, sha256 and dh-group14, a key for the identities
+              #    B_IP and A_VIP, a peer that dials A_VIP with UDP encapsulation
+              #    forced, and a tunnel from two local sources, 192.0.2.0/24
+              #    (declared) and 198.51.100.0/24 (not declared: the first
+              #    negative case), to any remote. The JSON goes to the pod in an
+              #    environment variable as base64: stdin of `kubectl exec` does
+              #    not reliably carry a file, and this avoids the nested quoting.
+              cat > /tmp/b-ipsec.json <<JSON
+              [
+               {"op":"set","path":["vpn","ipsec","esp-group","ROUTER-ESP","lifetime","3600"]},
+               {"op":"set","path":["vpn","ipsec","esp-group","ROUTER-ESP","pfs","dh-group14"]},
+               {"op":"set","path":["vpn","ipsec","esp-group","ROUTER-ESP","proposal","1","encryption","aes256"]},
+               {"op":"set","path":["vpn","ipsec","esp-group","ROUTER-ESP","proposal","1","hash","sha256"]},
+               {"op":"set","path":["vpn","ipsec","ike-group","ROUTER-IKE","key-exchange","ikev2"]},
+               {"op":"set","path":["vpn","ipsec","ike-group","ROUTER-IKE","lifetime","28800"]},
+               {"op":"set","path":["vpn","ipsec","ike-group","ROUTER-IKE","proposal","1","dh-group","14"]},
+               {"op":"set","path":["vpn","ipsec","ike-group","ROUTER-IKE","proposal","1","encryption","aes256"]},
+               {"op":"set","path":["vpn","ipsec","ike-group","ROUTER-IKE","proposal","1","hash","sha256"]},
+               {"op":"set","path":["vpn","ipsec","authentication","psk","siteA","id","${B_IP}"]},
+               {"op":"set","path":["vpn","ipsec","authentication","psk","siteA","id","${A_VIP}"]},
+               {"op":"set","path":["vpn","ipsec","authentication","psk","siteA","secret","${PSK}"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","authentication","local-id","${B_IP}"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","authentication","mode","pre-shared-secret"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","authentication","remote-id","${A_VIP}"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","connection-type","initiate"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","default-esp-group","ROUTER-ESP"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","force-udp-encapsulation"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","ike-group","ROUTER-IKE"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","local-address","${B_IP}"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","remote-address","${A_VIP}"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","tunnel","1","local","prefix","192.0.2.0/24"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","tunnel","1","local","prefix","198.51.100.0/24"]},
+               {"op":"set","path":["vpn","ipsec","site-to-site","peer","siteA","tunnel","1","remote","prefix","0.0.0.0/0"]}
+              ]
+              JSON
+              cfg_b64=$(base64 < /tmp/b-ipsec.json | tr -d '\n')
+
+              # B's guest finishes booting and starts its API a couple of minutes
+              # after the instance first shows an address, so retry until the
+              # commit reports success.
+              end=$(( $(date +%s) + 300 ))
+              while :; do
+                resp=$(kubectl -n "$PROBE_NS" exec probe-driver -- \
+                  env DB64="$cfg_b64" BIP="$B_IP" BKEY="$B_KEY" sh -c '
+                    data=$(echo "$DB64" | base64 -d)
+                    curl -k -s --max-time 90 "https://$BIP/configure" \
+                      --form-string "data=$data" --form-string "key=$BKEY"' 2>/dev/null || true)
+                case "$resp" in *'"success": true'*|*'"success":true'*) echo "the IPsec of B was committed"; break ;; esac
+                [ "$(date +%s)" -ge "$end" ] && { echo "timeout committing the IPsec of B; the last answer: ${resp:-<none>}"; exit 1; }
+                sleep 5
+              done
+
+              # 3. Wait for a security association on A: its `show vpn ipsec sa`
+              #    over the management API, a row whose state is "up". The budget
+              #    covers the push of the peer by the operator, which lands once
+              #    the management API answers, and the IKE exchange. The read
+              #    takes about twenty seconds on the appliance: it starts with
+              #    "sudo: unable to resolve host", the guest not knowing its own
+              #    name, and every privileged command waits for that to fail. The
+              #    budget of the call is several times that.
+              end=$(( $(date +%s) + 420 ))
+              while :; do
+                if kubectl -n "$PROBE_NS" exec probe-driver -- \
+                     env IP="$A_POD_IP" KEY="$A_TOKEN" sh -c '
+                       curl -k -s --max-time 90 "https://$IP/show" \
+                         --form-string "data={\"op\":\"show\",\"path\":[\"vpn\",\"ipsec\",\"sa\"]}" \
+                         --form-string "key=$KEY" \
+                       | jq -r ".data" | awk "\$2==\"up\"{f=1} END{exit !f}"' 2>/dev/null; then
+                  echo "an IPsec SA is up on A"; break
+                fi
+                [ "$(date +%s)" -ge "$end" ] && { echo "timeout waiting for an IPsec SA on A"; exit 1; }
+                sleep 5
+              done
+            check:
+              ($error == null): true
+
+    - name: assert-tunnel-established
+      description: >-
+        The operator reads the tunnel from the engine and says it in the status.
+        The poll is 30 seconds by default, so this waits a little for the next
+        look.
+      try:
+        - assert:
+            timeout: 3m
+            resource:
+              apiVersion: siterouter.aenix.io/v1alpha1
+              kind: SiteRouter
+              metadata:
+                name: a
+              status:
+                (conditions[?type == 'TunnelEstablished']):
+                  - status: "True"
+
+    # ── 6. The grant and the routes ──────────────────────────────────────────
+    - name: assert-namespace-routes-annotation
+      description: >-
+        The connector writes ovn.kubernetes.io/routes on the namespace so that
+        the way back to the remote site leads to the gateway. contains() with a
+        string argument is safe under Chainsaw 0.2.15; the `|| ''` keeps a
+        missing annotation from erroring the assert.
+      try:
+        - assert:
+            timeout: 2m
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: ($namespace)
+              (contains(metadata.annotations."ovn.kubernetes.io/routes" || '', '192.0.2.0/24')): true
+
+    - name: assert-gateway-port-security-relaxed
+      description: >-
+        The connector turns port security off on the gateway pod, and only after
+        the operator has confirmed the source filter of the guest. The pod's name
+        is generated, so it is found by the label of KubeVirt, and the loop waits
+        for a value of false, so that an empty list is not a pass.
+      try:
+        - script:
+            timeout: 4m
+            content: |
+              set -eu
+              end=$(( $(date +%s) + 180 ))
+              while :; do
+                v=$(kubectl -n "$NAMESPACE" get pod -l vm.kubevirt.io/name=site-router-a \
+                  -o jsonpath='{.items[0].metadata.annotations.ovn\.kubernetes\.io/port_security}' 2>/dev/null || true)
+                [ "$v" = "false" ] && break
+                [ "$(date +%s)" -ge "$end" ] && { echo "timeout: port security of the gateway pod is not off (got '$v')"; exit 1; }
+                sleep 5
+              done
+              echo "port security of the gateway pod is off, after the source filter was confirmed"
+            check:
+              ($error == null): true
+
+    - name: assert-pending-workloads
+      description: >-
+        The pod of step 2 was made before the routes, so the operator says in
+        RoutesProgrammed that it lags, naming it, and the connector lists it in
+        the status of the Forwarder. Nothing restarts it: that is for the tenant.
+        RoutesProgrammed is False for as long as a pod lags, and so is Ready: the
+        gateway serves new pods, but a part of the tenant is told it has no
+        route, and that is the honest thing to say.
+      try:
+        - assert:
+            timeout: 3m
+            resource:
+              apiVersion: siterouter.aenix.io/v1alpha1
+              kind: SiteRouter
+              metadata:
+                name: a
+              status:
+                (conditions[?type == 'RoutesProgrammed']):
+                  - status: "False"
+                    reason: PendingWorkloads
+                    (contains(message, 'site-router-pending-probe')): true
+        - assert:
+            timeout: 1m
+            resource:
+              apiVersion: siterouter.aenix.io/v1alpha1
+              kind: Forwarder
+              metadata:
+                name: site-router-a
+              status:
+                (pendingWorkloads != null): true
+                (contains(pendingWorkloads, 'site-router-pending-probe')): true
+
+    - name: assert-fresh-pod-inherits-route
+      description: >-
+        A pod made after the routes is born with them: the network stamps
+        ovn.kubernetes.io/routes on it when it is created.
+      try:
+        - apply:
+            file: fresh-route-pod.yaml
+        - assert:
+            timeout: 2m
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: site-router-fresh-probe
+              (contains(metadata.annotations."ovn.kubernetes.io/routes" || '', '192.0.2.0/24')): true
+
+    # ── 7. A backend behind A ────────────────────────────────────────────────
+    - name: create-backend
+      description: >-
+        agnhost /clientip behind A, made after the routes so it has the way back
+        to B and can answer across the tunnel.
+      try:
+        - apply:
+            file: backend.yaml
+        - assert:
+            timeout: 3m
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: site-router-backend
+              status:
+                phase: Running
+                (containerStatuses[0].ready): true
+        - assert:
+            timeout: 1m
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: site-router-backend
+              (contains(metadata.annotations."ovn.kubernetes.io/routes" || '', '192.0.2.0/24')): true
+
+    # ── 8. Inbound, source preserved ─────────────────────────────────────────
+    - name: assert-inbound-source-preserved
+      description: >-
+        From B, reach the backend behind A through the tunnel. /clientip must
+        report B's own source, 192.0.2.x, which is the contract of routed mode:
+        no NAT. The probe is driven from B's guest by probe_from_b_stdout.
+      try:
+        - script:
+            timeout: 5m
+            content: |
+              set -eu
+              . ./_probe-lib.sh
+              BACKEND_IP=$(kubectl -n "$NAMESPACE" get pod site-router-backend \
+                -o jsonpath='{.status.podIP}')
+              [ -n "$BACKEND_IP" ] || { echo "no address of the backend pod"; exit 1; }
+              # Polled, because a backend that reports Ready is not yet let
+              # through by the gateway: the guest admits decrypted traffic only
+              # to the addresses of the namespace that the operator has pushed,
+              # and the operator learns of a new pod on its next poll. This
+              # waits for the probe to be answered and then checks the answer
+              # once and strictly, so a NAT'd source still fails the step.
+              #
+              # errexit is off around the probe and its status is taken after
+              # it, because under `set -e` a failing command substitution ends
+              # the script before the next line, and a probe that cannot reach
+              # the backend at all is the case whose output is worth having.
+              end=$(( $(date +%s) + 180 ))
+              attempts=0
+              while :; do
+                attempts=$((attempts + 1))
+                set +e
+                observed=$(probe_from_b_stdout http "$BACKEND_IP" 8080 "/clientip" 2>&1)
+                probe_rc=$?
+                set -e
+                [ "$probe_rc" -eq 0 ] && [ -n "$observed" ] && break
+                [ "$(date +%s)" -ge "$end" ] && break
+                sleep 5
+              done
+              record inbound-source "backend=$BACKEND_IP rc=$probe_rc attempts=$attempts observed='$observed'"
+              [ "$probe_rc" -eq 0 ] && [ -n "$observed" ] || { echo "FAIL: no answer from the backend in 180s; the last rc=$probe_rc: $observed"; exit 1; }
+              case "$observed" in
+                192.0.2.*) echo "source preserved: the backend saw $observed" ;;
+                *) echo "FAIL: the backend saw '$observed', expected a 192.0.2.x source (NAT or not routed)"; exit 1 ;;
+              esac
+            check:
+              ($error == null): true
+
+    # ── 9. The clamp of the MSS ──────────────────────────────────────────────
+    - name: assert-mss-clamp
+      description: >-
+        A transfer of several MB from B to the backend across the tunnel must
+        complete: the clamp of the TCP MSS keeps the path MTU from black-holing
+        it. A stall, the transfer hanging until the step times out, is the failure.
+      try:
+        - script:
+            timeout: 5m
+            content: |
+              set -eu
+              . ./_probe-lib.sh
+              BACKEND_IP=$(kubectl -n "$NAMESPACE" get pod site-router-backend \
+                -o jsonpath='{.status.podIP}')
+              transfer_from_b "$BACKEND_IP" 8080 8
+              echo "the transfer across the tunnel completed (the clamp holds)"
+            check:
+              ($error == null): true
+
+    # ── 10. The negative-security matrix: the gate ───────────────────────────
+    - name: negative-security
+      description: >-
+        From B, every forbidden flow must be dropped and the drop attributed to
+        the guard that made it: not only that it did not arrive but which guard
+        stopped it. The one flow that is allowed, a declared remote source to the
+        tenant's own destination, must pass with its source preserved. Every
+        helper fails when its evidence is missing, so the gate cannot pass
+        without it.
+      try:
+        - script:
+            # Every counter is read before and after its probe, and a read takes
+            # about twenty seconds on the appliance, so the reads of the matrix
+            # alone take most of ten minutes.
+            timeout: 25m
+            content: |
+              set -eu
+              . ./_probe-lib.sh
+
+              GW_IP=$(kubectl -n "$NAMESPACE" get pod -l vm.kubevirt.io/name=site-router-a \
+                -o jsonpath='{.items[0].status.podIP}')
+              BACKEND_IP=$(kubectl -n "$NAMESPACE" get pod site-router-backend \
+                -o jsonpath='{.status.podIP}')
+              NODE_IP=$(kubectl get nodes \
+                -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+              API_CLUSTERIP=$(kubectl -n default get svc kubernetes -o jsonpath='{.spec.clusterIP}')
+              # A pod of the pod network outside the namespace: another tenant or a
+              # system namespace. The filter on the host address keeps the target
+              # a pod's address and not a node's, which case 3 covers.
+              OTHER_POD_IP=$(kubectl get pods -A \
+                -o jsonpath='{range .items[*]}{.status.podIP}{" "}{.status.hostIP}{" "}{.metadata.namespace}{"\n"}{end}' \
+                | awk -v ns="$NAMESPACE" '$1!="" && $1!=$2 && $3!=ns {print $1; exit}')
+
+              # Every target must be known before the first probe. An empty
+              # destination would make a probe fail for the wrong reason, nothing
+              # was reached because there was nothing to reach, and a drop that
+              # is not attributed to its guard voids the gate. All the missing
+              # ones are named at once.
+              missing=
+              for pair in "GW_IP=$GW_IP" "BACKEND_IP=$BACKEND_IP" "NODE_IP=$NODE_IP" \
+                          "API_CLUSTERIP=$API_CLUSTERIP" "OTHER_POD_IP=$OTHER_POD_IP"; do
+                case "$pair" in
+                  *=) missing="$missing ${pair%=}" ;;
+                esac
+              done
+              if [ -n "$missing" ]; then
+                echo "could not resolve the target of a probe:$missing"
+                exit 1
+              fi
+
+              # ── drops: <desc> <guard-check> <proto> <dst> [port] ────────────
+              # 1. A source outside remoteCIDRs never reaches A. The attribution
+              #    is weaker here and worth saying exactly: with B's traffic
+              #    selector narrowed to 192.0.2.0/24, a 198.51.100.x packet is in
+              #    no child SA, so B forwards it in the clear, and B's own port
+              #    security drops it, B being a plain VM with anti-spoofing on.
+              #    Either way it never arrives. The assertion is that it did not
+              #    arrive, and the attribution is that the default action of
+              #    TUNNEL-INGRESS stayed flat, which proves only that the filter
+              #    of A's guest was not what dropped it.
+              PROBE_SRC=198.51.100.7 \
+                assert_dropped "a source outside remoteCIDRs" \
+                  "guest_counter_flat TUNNEL-INGRESS default-action" \
+                  tcp "$BACKEND_IP" 8080
+
+              # 2. Another tenant's pod: the guest admits one address for every
+              #    pod and every Service of this namespace, not the pod network,
+              #    so a foreign pod matches no accept and dies at the default
+              #    action. It never reaches a pod's port, so no Cilium record
+              #    exists to match; the isolation is asserted at the layer that
+              #    enforces it.
+              assert_dropped "a pod of another tenant" \
+                "guest_counter_incremented TUNNEL-INGRESS default-action" \
+                tcp "$OTHER_POD_IP" 8080
+
+              # 3. A node: not a network of the tenant, so the default action.
+              assert_dropped "a node address" \
+                "guest_counter_incremented TUNNEL-INGRESS default-action" \
+                tcp "$NODE_IP" 10250
+
+              # 4. The ClusterIP of the Kubernetes API. The guest admits only the
+              #    addresses of Services of this namespace, and the kubernetes
+              #    Service lives in `default`.
+              assert_dropped "the Kubernetes API" \
+                "guest_counter_incremented TUNNEL-INGRESS default-action" \
+                tcp "$API_CLUSTERIP" 443
+
+              # 5. 169.254.0.0/16, the metadata address among it, is dropped by
+              #    the source filter of the guest before it can leave toward the
+              #    network policy.
+              assert_dropped "link-local, the metadata address 169.254.169.254" \
+                "guest_counter_incremented TUNNEL-INGRESS default-action" \
+                tcp 169.254.169.254 80
+
+              # 6. The management API over the tunnel: rule 1 of the input chain
+              #    drops ports 22 and 443 of what came through IPsec.
+              assert_dropped "the management API over the tunnel (443)" \
+                "guest_counter_incremented input 1" \
+                tcp "$GW_IP" 443
+              assert_dropped "SSH to the gateway over the tunnel (22)" \
+                "guest_counter_incremented input 1" \
+                tcp "$GW_IP" 22
+
+              # 7. An address of the world: neither a pod nor a Service of the
+              #    tenant, and routed mode has no default route into the cluster.
+              assert_dropped "an address of the world" \
+                "guest_counter_incremented TUNNEL-INGRESS default-action" \
+                tcp 203.0.113.10 443
+
+              # ── the allowed flow ────────────────────────────────────────────
+              observed=$(probe_from_b_stdout http "$BACKEND_IP" 8080 "/clientip")
+              case "$observed" in
+                192.0.2.*) echo "OK [allowed]: the backend is reached and the source is preserved ($observed)" ;;
+                *) echo "FAIL [allowed]: expected the backend reached with a 192.0.2.x source, got '$observed'"; exit 1 ;;
+              esac
+
+              echo "negative-security: every forbidden flow dropped and attributed; the allowed flow preserved"
+            check:
+              ($error == null): true
+
+    - name: management-api-refuses-a-tenant-pod
+      description: >-
+        A pod of the tenant in the same namespace gets nothing out of the
+        management API of the gateway. Whether it can open a connection to the
+        port is reported and not asserted: the namespace has the policies of a
+        tenant namespace, which let the cluster in to every pod, and the policy of
+        the gateway only adds to them, so the port is reachable and the key is
+        the control that is left (design.md, the trust model). What is asserted is
+        that a request without the key and one with another key are refused, with
+        the answer of the API and not with silence, so that a gateway whose API
+        is down does not pass.
+      try:
+        - script:
+            timeout: 5m
+            content: |
+              set -eu
+              GW_IP=$(kubectl -n "$NAMESPACE" get pod -l vm.kubevirt.io/name=site-router-a \
+                -o jsonpath='{.items[0].status.podIP}')
+              [ -n "$GW_IP" ] || { echo "no address of the gateway pod"; exit 1; }
+              # agnhost connect exits non-zero when it cannot connect.
+              if ! kubectl -n "$NAMESPACE" exec site-router-backend -- \
+                   /agnhost connect "$GW_IP:443" --timeout=5s >/dev/null 2>&1; then
+                echo "the port of the management API is closed to a pod of the tenant at the pod boundary"
+                exit 0
+              fi
+              echo "the port of the management API is open to a pod of the tenant, as the baseline of a tenant namespace makes it; the key is what is asked"
+              for key in "" "not-the-key"; do
+                body=$(kubectl -n "$NAMESPACE" exec site-router-backend -- \
+                  curl -k -s -m 60 "https://$GW_IP/retrieve" \
+                    --form-string 'data={"op":"showConfig","path":[]}' \
+                    --form-string "key=$key" 2>/dev/null || true)
+                case "$body" in
+                  *'"success": false'*|*'"success":false'*) ;;
+                  *) echo "FAIL: with the key '${key:-<none>}' the answer was not a refusal: ${body:-<none>}"; exit 1 ;;
+                esac
+              done
+              echo "a request without the key and one with another key are refused"
+            check:
+              ($error == null): true
+
+    # ── 11. Withdrawal ───────────────────────────────────────────────────────
+    - name: assert-delete-propagation
+      description: >-
+        Deleting the SiteRouter withdraws the routes and the grant, then removes
+        the objects of the gateway, and leaves no policy behind. The delete waits
+        for the SiteRouter to be gone: the finalizer runs the withdrawal in order.
+        error: on kinds that are installed asserts that the object is absent
+        and does not fail on a kind it does not know.
+      try:
+        - delete:
+            timeout: 5m
+            ref:
+              apiVersion: siterouter.aenix.io/v1alpha1
+              kind: SiteRouter
+              name: a
+        # The routes of the remote network are out of the annotation.
+        - assert:
+            timeout: 2m
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: ($namespace)
+              (contains(metadata.annotations."ovn.kubernetes.io/routes" || '', '192.0.2.0/24')): false
+        - error:
+            timeout: 3m
+            resource:
+              apiVersion: kubevirt.io/v1
+              kind: VirtualMachine
+              metadata:
+                name: site-router-a
+        - error:
+            timeout: 3m
+            resource:
+              apiVersion: siterouter.aenix.io/v1alpha1
+              kind: Forwarder
+              metadata:
+                name: site-router-a
+        - error:
+            timeout: 3m
+            resource:
+              apiVersion: cdi.kubevirt.io/v1beta1
+              kind: DataVolume
+              metadata:
+                labels:
+                  siterouter.aenix.io/boot-disk-of: a
+        - error:
+            timeout: 2m
+            resource:
+              apiVersion: cilium.io/v2
+              kind: CiliumNetworkPolicy
+              metadata:
+                name: site-router-a-gateway-egress-deny
+        - error:
+            timeout: 2m
+            resource:
+              apiVersion: cilium.io/v2
+              kind: CiliumNetworkPolicy
+              metadata:
+                name: site-router-a-gateway-ingress
+        # The connector takes the grant back before the pod goes. Once the pod
+        # is gone the relaxed port is too, so this asserts that none is left
+        # behind: no surviving gateway pod may carry port_security=false.
+        - script:
+            timeout: 1m
+            content: |
+              set -eu
+              stuck=$(kubectl -n "$NAMESPACE" get pod -l vm.kubevirt.io/name=site-router-a \
+                -o jsonpath='{range .items[?(@.metadata.annotations.ovn\.kubernetes\.io/port_security=="false")]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+              [ -z "$stuck" ] || { echo "FAIL: a gateway pod is left with port_security=false after the delete: $stuck"; exit 1; }
+              echo "no surviving gateway pod has port security off"
+            check:
+              ($error == null): true
