@@ -51,6 +51,33 @@ jobs:
       - name: Run tests
         run: make test
 
+  crd:
+    permissions:
+      contents: read
+    name: CRD schema on Kubernetes ${{ matrix.k8s }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # `make test` covers the newest version; these are the older ones.
+        k8s: ["1.31", "1.34"]
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: "**/go.sum"
+
+      - name: Run the CRD schema tests
+        env:
+          K8S: ${{ matrix.k8s }}
+        run: make test-crd CRD_K8S_VERSIONS="$K8S"
+
   generated:
     permissions:
       contents: read
