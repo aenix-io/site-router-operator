@@ -217,6 +217,23 @@ func TestSiteRouterRejects(t *testing.T) {
 	}
 }
 
+// The schema refuses only the default route itself. Networks that no tenant has a
+// use for but that are well-formed IPv4, such as the two halves of the default
+// route, loopback and link-local, pass it: whether they overlap the cluster is
+// for the controller to judge against the cluster's own networks. This test
+// states the division of labor, and is the one to change if the schema is made
+// stricter.
+func TestSiteRouterSchemaLeavesClusterDependentChecksToTheController(t *testing.T) {
+	for _, cidr := range []v1alpha1.IPv4CIDR{"0.0.0.0/1", "128.0.0.0/1", "127.0.0.0/8", "169.254.0.0/16", "224.0.0.0/4"} {
+		t.Run(string(cidr), func(t *testing.T) {
+			s := siteRouter(func(s *v1alpha1.SiteRouter) { s.Spec.RemoteCIDRs = []v1alpha1.IPv4CIDR{cidr} })
+			if err := create(t, s); err != nil {
+				t.Fatalf("the schema now rejects %s; update this test and the type's description: %v", cidr, err)
+			}
+		})
+	}
+}
+
 // The apiserver reports every violated rule, not only the first, so a tenant
 // who made three mistakes sees three messages.
 func TestSiteRouterReportsEveryViolation(t *testing.T) {
