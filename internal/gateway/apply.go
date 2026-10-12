@@ -47,6 +47,14 @@ const FieldOwner = "site-router-operator"
 // credential or a policy that came from someone else is not one the gateway can
 // be trusted with.
 //
+// What that guarantees is limited. Controlled-by is a claim written into the
+// object by whoever made it. It tells an object of the operator from one that
+// merely has the same name, and a mistake from a collision. It does not tell it
+// from a forgery by someone who can make objects in the namespace and has read
+// the UID of the SiteRouter, which is in its metadata. Closing that takes the
+// operator remembering the UIDs of what it made and accepting only those, or the
+// platform keeping tenants from making objects under these names.
+//
 // Objects that are no longer part of the gateway, such as the Secret of the
 // pre-shared key once the SiteRouter names its own, are not removed here.
 type Applier struct {
