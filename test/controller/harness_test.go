@@ -80,6 +80,8 @@ const (
 	webIP     = "10.244.1.5"
 
 	name = "branch-office"
+	// otherName is the sibling of the SiteRouter of most tests.
+	otherName = "head-office"
 )
 
 // testConfig is the configuration of an operator with two versions of the image,
@@ -629,21 +631,21 @@ func (g *rig) events() []string {
 }
 
 // sibling is another SiteRouter in the same namespace, which the same reconciler
-// looks after. Its networks are its own, since the connector gives a network to
+// looks after. Its network is its own, since the connector gives a network to
 // the first Forwarder that asks for it.
-func (g *rig) sibling(siblingName, remote string) *rig {
+func (g *rig) sibling() *rig {
 	g.t.Helper()
 	sr := &v1alpha1.SiteRouter{
-		Name:      siblingName,
+		Name:      otherName,
 		Namespace: g.ns,
 		Spec: v1alpha1.SiteRouterSpec{
 			Peer:        v1alpha1.Peer{Address: "203.0.113.20"},
-			RemoteCIDRs: []v1alpha1.IPv4CIDR{v1alpha1.IPv4CIDR(remote)},
+			RemoteCIDRs: []v1alpha1.IPv4CIDR{"198.18.0.0/24"},
 		},
 	}
 	mustCreate(g.t, sr)
 	s := *g
-	s.name = siblingName
+	s.name = otherName
 	return &s
 }
 

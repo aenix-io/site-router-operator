@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -250,6 +251,22 @@ func superseded(o client.Object, sr *v1alpha1.SiteRouter, current string) bool {
 func moving(conds []metav1.Condition) bool {
 	c := meta.FindStatusCondition(conds, v1alpha1.ConditionGatewayReady)
 	return c != nil && c.Reason == v1alpha1.ReasonUpgrading
+}
+
+// stuck says whether the status has the gateway down after a move that did not come
+// up in time. It does not hold a place.
+func stuck(conds []metav1.Condition) bool {
+	c := meta.FindStatusCondition(conds, v1alpha1.ConditionGatewayReady)
+	return c != nil && c.Status == metav1.ConditionFalse && c.Reason == v1alpha1.ReasonUpgradeFailed
+}
+
+// gatewayReadySince is when GatewayReady last changed its status, which for a
+// gateway that is restarting is when it was pointed at the new disk.
+func gatewayReadySince(conds []metav1.Condition) time.Time {
+	if c := meta.FindStatusCondition(conds, v1alpha1.ConditionGatewayReady); c != nil {
+		return c.LastTransitionTime.Time
+	}
+	return time.Time{}
 }
 
 // restoreGate takes the places of the moves that were under way before the

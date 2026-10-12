@@ -301,7 +301,7 @@ func TestAnAnnotationThatNamesAVersionThatIsNotListedIsSaidOnce(t *testing.T) {
 // a place is free.
 func TestOnlyAsManyGatewaysMoveAsAreAllowed(t *testing.T) {
 	g := newRig(t, onFirstVersion, func(cfg *config.Config, _ *v1alpha1.SiteRouter) { cfg.Upgrade.MaxConcurrent = 1 })
-	other := g.sibling("head-office", "198.18.0.0/24")
+	other := g.sibling()
 	g.ready()
 	other.ready()
 
@@ -349,7 +349,7 @@ func TestOnlyAsManyGatewaysMoveAsAreAllowed(t *testing.T) {
 // because the operator has forgotten it.
 func TestThePlacesOfMovesSurviveARestartOfTheOperator(t *testing.T) {
 	g := newRig(t, onFirstVersion, func(cfg *config.Config, _ *v1alpha1.SiteRouter) { cfg.Upgrade.MaxConcurrent = 1 })
-	other := g.sibling("head-office", "198.18.0.0/24")
+	other := g.sibling()
 	g.ready()
 	other.ready()
 	g.latest(func(cfg *config.Config) { cfg.Upgrade.MaxConcurrent = 1 })
@@ -602,7 +602,7 @@ func TestADiskThatIsNotTheOperatorsDoesNotSayWhatRuns(t *testing.T) {
 // let a gateway restart while the places are taken: it waits for one.
 func TestAGatewayWithAReadyDiskWaitsForAPlace(t *testing.T) {
 	g := newRig(t, onFirstVersion, func(cfg *config.Config, _ *v1alpha1.SiteRouter) { cfg.Upgrade.MaxConcurrent = 1 })
-	other := g.sibling("head-office", "198.18.0.0/24")
+	other := g.sibling()
 	g.ready()
 	other.ready()
 	mine, theirs := diskName(imageV2), func() string { d, _ := diskOf("head-office", imageV2); return d }()
@@ -768,5 +768,120 @@ func TestTheOldDiskStaysUntilTheGatewayRunsOnTheNew(t *testing.T) {
 	g.reconcile()
 	if !g.exists(gateway.DataVolumeGVK, diskName(imageV1)) {
 		t.Error("the old disk was deleted before the gateway ran on the new one")
+	}
+}
+
+// The places are shared by every namespace, and a gateway that cannot start, for
+// want of memory the cluster has, would hold one for ever. It gives its place back
+// when it has had the time to boot, says it did not come up, and keeps the old disk to
+// go back to; and if it comes up after all, the move is completed.
+func TestAGatewayThatDoesNotComeUpDoesNotHoldAPlaceForEver(t *testing.T) {
+	g := newRig(t, onFirstVersion, func(cfg *config.Config, _ *v1alpha1.SiteRouter) { cfg.Upgrade.MaxConcurrent = 1 })
+	other := g.sibling()
+	g.ready()
+	other.ready()
+	oldDisk, newDisk := diskName(imageV1), diskName(imageV2)
+	theirs := func() string { d, _ := diskOf("head-office", imageV2); return d }()
+
+	g.latest(func(cfg *config.Config) { cfg.Upgrade.MaxConcurrent = 1 })
+	other.follow(g)
+	g.reconcile()
+	g.setDV(newDisk, "Succeeded")
+	g.reconcile() // pointed at the new disk, and the instance is deleted
+	g.expect(v1alpha1.ConditionGatewayReady, metav1.ConditionFalse, v1alpha1.ReasonUpgrading)
+
+	// Within the time it has the place.
+	g.now = g.now.Add(10 * time.Minute)
+	g.reconcile()
+	other.reconcile()
+	g.expect(v1alpha1.ConditionGatewayReady, metav1.ConditionFalse, v1alpha1.ReasonUpgrading)
+	if other.exists(gateway.DataVolumeGVK, theirs) {
+		t.Error("a second gateway was given a place that the first still had time to use")
+	}
+
+	// Past the time it gives the place back.
+	g.now = g.now.Add(10 * time.Minute)
+	g.events()
+	g.reconcile()
+	g.expect(v1alpha1.ConditionGatewayReady, metav1.ConditionFalse, v1alpha1.ReasonUpgradeFailed)
+	g.expect(v1alpha1.ConditionReady, metav1.ConditionFalse, v1alpha1.ReasonUpgradeFailed)
+	if msg := g.cond(v1alpha1.ConditionGatewayReady).Message; !strings.Contains(msg, v1alpha1.AnnotationUpgradeTo) {
+		t.Errorf("the message does not say how to send the gateway back: %q", msg)
+	}
+	if v, _ := g.gauge("site_router_upgrades_in_progress", nil); v != 0 {
+		t.Errorf("site_router_upgrades_in_progress = %v, want the place free", v)
+	}
+	if got := g.upgrades("failed"); got != 1 {
+		t.Errorf("failed moves = %v, want 1", got)
+	}
+	var warned bool
+	for _, e := range g.events() {
+		warned = warned || strings.HasPrefix(e, "Warning "+v1alpha1.ReasonUpgradeFailed+" ")
+	}
+	if !warned {
+		t.Error("no warning for a gateway that did not come up")
+	}
+	if !g.exists(gateway.DataVolumeGVK, oldDisk) {
+		t.Error("the old disk was deleted, so there is nothing to go back to")
+	}
+	if got := g.sr().Status.Engine; got.Version != "1.0" {
+		t.Errorf("engine = %+v: the gateway has not booted on the new image", got)
+	}
+	g.reconcile()
+	if got := g.upgrades("failed"); got != 1 {
+		t.Errorf("the failure was counted again: %v", got)
+	}
+
+	// The place is free for another gateway.
+	other.reconcile()
+	other.expect(v1alpha1.ConditionGatewayReady, metav1.ConditionTrue, v1alpha1.ReasonUpgrading)
+	if !other.exists(gateway.DataVolumeGVK, theirs) {
+		t.Error("the place was not given to the gateway that waited")
+	}
+
+	// It comes up after all.
+	g.reboot()
+	g.reconcile()
+	g.expect(v1alpha1.ConditionGatewayReady, metav1.ConditionTrue, "Running")
+	if got := g.sr().Status.Engine; got.Version != "2.0" || got.ImageDigest != digestV2 {
+		t.Errorf("engine = %+v, want the second version", got)
+	}
+	if g.exists(gateway.DataVolumeGVK, oldDisk) {
+		t.Error("the old disk was kept after the gateway ran on the new one")
+	}
+	if got := g.upgrades("completed"); got != 1 {
+		t.Errorf("completed moves = %v, want 1", got)
+	}
+}
+
+// A gateway that did not come up and is sent back is on its way and not a failure,
+// whatever else it has to wait for: here the disk it goes back to is gone and is
+// made again.
+func TestAGatewayThatGaveUpIsNotCalledFailedWhileItIsSentBack(t *testing.T) {
+	g := newRig(t, onFirstVersion, func(cfg *config.Config, sr *v1alpha1.SiteRouter) {
+		cfg.Upgrade.Policy = config.UpgradeAnnotation
+		sr.Annotations = map[string]string{v1alpha1.AnnotationUpgradeTo: "1.0"}
+	})
+	g.ready()
+	g.edit(func(sr *v1alpha1.SiteRouter) { sr.Annotations = map[string]string{v1alpha1.AnnotationUpgradeTo: "2.0"} })
+	g.reconcile()
+	g.setDV(diskName(imageV2), "Succeeded")
+	g.reconcile()
+	g.now = g.now.Add(16 * time.Minute)
+	g.reconcile()
+	g.expect(v1alpha1.ConditionGatewayReady, metav1.ConditionFalse, v1alpha1.ReasonUpgradeFailed)
+
+	g.deleteObject(gateway.DataVolumeGVK, diskName(imageV1))
+	g.edit(func(sr *v1alpha1.SiteRouter) { sr.Annotations = map[string]string{v1alpha1.AnnotationUpgradeTo: "1.0"} })
+	g.reconcile()
+
+	if c := g.cond(v1alpha1.ConditionGatewayReady); c.Reason == v1alpha1.ReasonUpgradeFailed {
+		t.Errorf("a gateway that is being sent back is called failed: %s (%s)", statusOf(c), c.Message)
+	}
+	if !g.exists(gateway.DataVolumeGVK, diskName(imageV1)) {
+		t.Error("the disk of the version it goes back to was not made again")
+	}
+	if v, _ := g.gauge("site_router_upgrades_in_progress", nil); v != 1 {
+		t.Errorf("site_router_upgrades_in_progress = %v, want the place taken for the way back", v)
 	}
 }

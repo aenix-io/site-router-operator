@@ -568,13 +568,8 @@ func (r *Reconciler) makeGateway(ctx context.Context, sr *v1alpha1.SiteRouter, s
 	}
 	runNames := names.ForImage(run.Image)
 	arrived := vmi != nil && vmi.running() && vmi.BootDisk == runNames.BootDisk
-	// A gateway that was moving and does not run on the disk it is pointed at is
-	// restarting. A move holds its place until the gateway runs on the new disk, and
-	// the status does not say it runs an image it has not booted on, whichever way it
-	// is going.
-	restarting := moving(sr.Status.Conditions) && !arrived
-	holding := !dec.Moving && restarting
-	if !dec.Moving && !holding {
+	rs := r.restartOf(sr, dec, arrived)
+	if !dec.Moving && !rs.holding {
 		r.gate.Release(key)
 	}
 
@@ -594,14 +589,14 @@ func (r *Reconciler) makeGateway(ctx context.Context, sr *v1alpha1.SiteRouter, s
 		vmi = nil
 	}
 
-	if !restarting {
+	if !rs.restarting {
 		digest, err := gateway.ImageDigest(run.Image)
 		if err != nil {
 			return failed(err)
 		}
 		// It is a move that is completed when the gateway runs another image than the
 		// status knew; one that is given up on, by taking the annotation away, is not.
-		moved := moving(sr.Status.Conditions) && digest != sr.Status.Engine.ImageDigest
+		moved := rs.marked && digest != sr.Status.Engine.ImageDigest
 		st.Engine = v1alpha1.EngineStatus{Name: r.config.Engine.Name, Version: run.Target, ImageDigest: digest}
 		if moved {
 			g.completed = true
@@ -617,11 +612,45 @@ func (r *Reconciler) makeGateway(ctx context.Context, sr *v1alpha1.SiteRouter, s
 			}
 		}
 	}
-	if holding {
+	switch {
+	case rs.holding:
 		g.pending(v1alpha1.ReasonUpgrading, fmt.Sprintf("restarting on version %s", run.Target))
+	case rs.gaveUp:
+		g.pending(v1alpha1.ReasonUpgradeFailed, fmt.Sprintf("the gateway has not come up on version %s in %s, and its place for another move is free; "+
+			"the disk of the version it ran is kept: the annotation %s sends it back, and what keeps it from starting is for whoever has the cluster to put right",
+			run.Target, r.config.Upgrade.BootTimeout.Duration, v1alpha1.AnnotationUpgradeTo))
 	}
 
 	return r.observe(ctx, sr, st, g, in, plan, vmi)
+}
+
+// restart is where the status has a gateway that was moving and does not run on the
+// disk it is pointed at.
+type restart struct {
+	// marked is true when the status has the gateway in a move or down after one that
+	// did not come up.
+	marked bool
+	// restarting is true when the gateway was moving and does not run on its disk. The
+	// status does not say it runs an image it has not booted on, whichever way it is
+	// going.
+	restarting bool
+	// holding is true when it is waited for to come up. The places are shared by every
+	// namespace, so a gateway that does not come up in time, for want of memory the
+	// cluster has or storage that is not provided, gives its place back.
+	holding bool
+	// gaveUp is true when it did not come up in time, and says so; the old disk stays
+	// to go back to.
+	gaveUp bool
+}
+
+func (r *Reconciler) restartOf(sr *v1alpha1.SiteRouter, dec rollout.Decision, arrived bool) restart {
+	conds := sr.Status.Conditions
+	inMove, down := moving(conds), stuck(conds)
+	rs := restart{marked: inMove || down, restarting: (inMove || down) && !arrived}
+	expired := inMove && rs.restarting && r.now().Sub(gatewayReadySince(conds)) > r.config.Upgrade.BootTimeout.Duration
+	rs.holding = inMove && rs.restarting && !expired
+	rs.gaveUp = !dec.Moving && rs.restarting && !rs.holding
+	return rs
 }
 
 // advance does the step of a move that the phase calls for.

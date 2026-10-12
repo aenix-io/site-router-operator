@@ -53,7 +53,7 @@ func TestParseTheSmallestUsableConfiguration(t *testing.T) {
 		t.Errorf("maxConcurrent = %d, want the default 2", cfg.Upgrade.MaxConcurrent)
 	}
 	if cfg.Timing.ForwarderNotResponding.Duration != time.Minute || cfg.Timing.Poll.Duration != 30*time.Second ||
-		cfg.Timing.Discovery.Duration != time.Minute || cfg.Upgrade.ImportTimeout.Duration != 30*time.Minute {
+		cfg.Timing.Discovery.Duration != time.Minute || cfg.Upgrade.ImportTimeout.Duration != 30*time.Minute || cfg.Upgrade.BootTimeout.Duration != 15*time.Minute {
 		t.Errorf("timing = %+v, want the defaults", cfg.Timing)
 	}
 	if bs := cfg.Gateway.DataVolume.BlockSize; bs.Logical != 512 || bs.Physical != 4096 {
@@ -81,8 +81,8 @@ timing: {forwarderNotResponding: 90s, poll: 10s, discovery: 2m}
 		cfg.Timing.Discovery.Duration != 2*time.Minute {
 		t.Errorf("timing = %+v", cfg.Timing)
 	}
-	cfg, err = Parse([]byte(strings.Replace(minimal, "upgrade: {policy: annotation}", "upgrade: {policy: auto, maxConcurrent: 3, importTimeout: 1h}", 1)))
-	if err != nil || cfg.Upgrade.Policy != UpgradeAuto || cfg.Upgrade.MaxConcurrent != 3 || cfg.Upgrade.ImportTimeout.Duration != time.Hour {
+	cfg, err = Parse([]byte(strings.Replace(minimal, "upgrade: {policy: annotation}", "upgrade: {policy: auto, maxConcurrent: 3, importTimeout: 1h, bootTimeout: 20m}", 1)))
+	if err != nil || cfg.Upgrade.Policy != UpgradeAuto || cfg.Upgrade.MaxConcurrent != 3 || cfg.Upgrade.ImportTimeout.Duration != time.Hour || cfg.Upgrade.BootTimeout.Duration != 20*time.Minute {
 		t.Errorf("upgrade = %+v, %v", cfg.Upgrade, err)
 	}
 }
@@ -138,6 +138,7 @@ func TestValidate(t *testing.T) {
 		{"a negative poll", func(c *Config) { c.Timing.Poll.Duration = -time.Second }, "timing.poll"},
 		{"no discovery time", func(c *Config) { c.Timing.Discovery.Duration = 0 }, "timing.discovery"},
 		{"no time to import an image", func(c *Config) { c.Upgrade.ImportTimeout.Duration = 0 }, "upgrade.importTimeout"},
+		{"no time to boot on an image", func(c *Config) { c.Upgrade.BootTimeout.Duration = 0 }, "upgrade.bootTimeout"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

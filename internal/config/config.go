@@ -96,6 +96,13 @@ type Upgrade struct {
 	// ready before the move is given up. Giving up leaves the gateway on the image
 	// it had and frees its place. It defaults to 30 minutes.
 	ImportTimeout metav1.Duration `json:"importTimeout,omitzero"`
+	// BootTimeout is how long a gateway may take to run on the new disk once it has
+	// been pointed at it. The places that bound how many gateways move at once are
+	// shared by every namespace, and a gateway that cannot start, for want of memory
+	// the cluster has or storage that is never provided, would hold one for ever.
+	// Past the time the place is free and the gateway says it did not come up, with
+	// the old disk still there to go back to. It defaults to 15 minutes.
+	BootTimeout metav1.Duration `json:"bootTimeout,omitzero"`
 }
 
 // Timing is how long the operator waits for, and how often it looks.
@@ -117,6 +124,7 @@ type Timing struct {
 const (
 	defaultMaxConcurrent = 2
 	defaultImportTimeout = 30 * time.Minute
+	defaultBootTimeout   = 15 * time.Minute
 	defaultNotResponding = time.Minute
 	defaultPoll          = 30 * time.Second
 	defaultDiscovery     = time.Minute
@@ -126,7 +134,11 @@ const (
 func Default() Config {
 	return Config{
 		Gateway: gateway.DefaultConfig(),
-		Upgrade: Upgrade{MaxConcurrent: defaultMaxConcurrent, ImportTimeout: metav1.Duration{Duration: defaultImportTimeout}},
+		Upgrade: Upgrade{
+			MaxConcurrent: defaultMaxConcurrent,
+			ImportTimeout: metav1.Duration{Duration: defaultImportTimeout},
+			BootTimeout:   metav1.Duration{Duration: defaultBootTimeout},
+		},
 		Timing: Timing{
 			ForwarderNotResponding: metav1.Duration{Duration: defaultNotResponding},
 			Poll:                   metav1.Duration{Duration: defaultPoll},
@@ -189,6 +201,7 @@ func (c Config) Validate() error {
 		"timing.poll":                   c.Timing.Poll,
 		"timing.discovery":              c.Timing.Discovery,
 		"upgrade.importTimeout":         c.Upgrade.ImportTimeout,
+		"upgrade.bootTimeout":           c.Upgrade.BootTimeout,
 	} {
 		if d.Duration <= 0 {
 			add("%s: %s is not a duration above zero", name, d.Duration)
