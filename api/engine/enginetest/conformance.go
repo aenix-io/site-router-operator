@@ -20,7 +20,6 @@ limitations under the License.
 package enginetest
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/aenix-io/site-router-operator/api/engine"
@@ -126,22 +125,14 @@ func testInfo(t *testing.T, r Rig) {
 }
 
 func testBootstrapPerVersion(t *testing.T, r Rig) {
-	images := map[string]string{}
 	for _, v := range r.Engine.Info().Versions {
 		p, err := r.Engine.Bootstrap(engine.BootstrapRequest{Instance: "a", Namespace: "ns", Version: v})
 		if err != nil {
 			t.Fatalf("Bootstrap(%s): %v", v, err)
 		}
-		if !strings.Contains(p.Image, "@sha256:") {
-			t.Errorf("%s: image is not pinned by digest: %q", v, p.Image)
-		}
 		if p.Arch == "" || p.DiskGiB <= 0 || p.ManagementPort <= 0 || len(p.SeedFiles) == 0 || len(p.Credentials) == 0 {
 			t.Errorf("%s: incomplete plan: %+v", v, p)
 		}
-		if other, dup := images[p.Image]; dup {
-			t.Errorf("versions %s and %s share the image %q: the image and seed pair is not per version", other, v, p.Image)
-		}
-		images[p.Image] = v
 	}
 }
 

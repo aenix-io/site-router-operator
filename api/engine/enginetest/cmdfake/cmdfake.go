@@ -92,7 +92,6 @@ func (e Engine) Bootstrap(r engine.BootstrapRequest) (engine.BootstrapPlan, erro
 		creds = e.Dev.mint()
 	}
 	return engine.BootstrapPlan{
-		Image:          fmt.Sprintf("registry.example/fake-cmd@sha256:%x", sha256.Sum256([]byte("fake-cmd/"+r.Version))),
 		Arch:           "amd64",
 		DiskGiB:        12,
 		SeedFiles:      map[string][]byte{"user-data": []byte("/* config for " + r.Instance + " " + r.Version + " */")},

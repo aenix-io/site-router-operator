@@ -158,16 +158,19 @@ type BootstrapRequest struct {
 	Instance        string
 	Namespace       string
 	ManagementAllow string
-	// Version is one of Info.Versions. Image and seed are returned as a pair for
-	// this version.
+	// Version is one of Info.Versions. The seed is rendered for this version; the
+	// image that goes with it is not the engine's to name, the operator takes it
+	// from its configuration.
 	Version string
 	// Existing holds credentials minted earlier; Bootstrap must keep them.
 	Existing map[string][]byte
 }
 
-// BootstrapPlan is what the operator needs to create the gateway VM.
+// BootstrapPlan is what the operator needs to create the gateway VM besides the
+// image. The image reference is operator configuration, so that a new build of
+// an image the engine can already drive is applied without rebuilding the
+// operator.
 type BootstrapPlan struct {
-	Image          string // digest pinned
 	Arch           string
 	DiskGiB        int
 	SeedFiles      map[string][]byte
@@ -178,7 +181,7 @@ type BootstrapPlan struct {
 // Engine knows one kind of appliance.
 type Engine interface {
 	Info() Info
-	// Bootstrap returns the image, seed and credentials for the version in the
+	// Bootstrap returns the seed and credentials for the version in the
 	// request. It mints credentials only when the request carries none; the
 	// ones in BootstrapRequest.Existing come back unchanged.
 	Bootstrap(BootstrapRequest) (BootstrapPlan, error)
