@@ -287,8 +287,13 @@ spec:
                 x-kubernetes-list-type: set
               scope:
                 description: |-
-                  scope holds the addresses of the pods selected by scopeSelector. They
-                  are what the gateway lets decrypted traffic through to.
+                  scope holds the addresses of the pods selected by scopeSelector, and the
+                  cluster IP of each Service of the namespace. They are what the gateway lets
+                  decrypted traffic through to, so an address that is not the tenant's to
+                  reach must not be here. A connector leaves out the pods that are being
+                  deleted, because their address goes back to the pool and may be given to a
+                  pod of another namespace, the pods that have finished, the pods on the host
+                  network, whose address is that of a node, and every gateway.
                 properties:
                   addresses:
                     description: addresses are IP addresses in the addressing of the

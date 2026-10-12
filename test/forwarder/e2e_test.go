@@ -112,7 +112,7 @@ func newSite(t *testing.T, w *world, connectorAtPodCreation bool) *site {
 	return s
 }
 
-func (w *world) pod(name string, labels map[string]string, ip string) {
+func (w *world) pod(name string, labels map[string]string, ip string, opts ...func(*corev1.Pod)) {
 	w.t.Helper()
 	p := &corev1.Pod{
 		Name:      name,
@@ -120,8 +120,14 @@ func (w *world) pod(name string, labels map[string]string, ip string) {
 		Labels:    labels,
 		Spec:      corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "registry.example/app"}}},
 	}
+	for _, o := range opts {
+		o(p)
+	}
+	// Creating a pod drops its status, so it is kept and written after.
+	status := p.Status
+	status.PodIP = ip
 	mustCreate(w.t, p)
-	p.Status.PodIP = ip
+	p.Status = status
 	if err := k8sClient.Status().Update(w.t.Context(), p); err != nil {
 		w.t.Fatal(err)
 	}
@@ -236,6 +242,36 @@ func TestAGatewayIsRoutedOnceTheFilterIsConfirmed(t *testing.T) {
 	g := s.conn.Granted(s.forwarderObject().UID)
 	if !slices.Equal(g.Gateways, []string{"10.244.1.9"}) {
 		t.Errorf("forwarding is granted to %v, want the pod of the gateway alone", g.Gateways)
+	}
+}
+
+// The destinations of the filter are what the gateway lets decrypted traffic
+// through to, so an address that is not the tenant's to reach must not be there.
+func TestTheScopeLeavesOutWhatIsNotTheTenantsToReach(t *testing.T) {
+	s := readyWorld(t, false)
+	s.pod("job-0", map[string]string{"app": "job"}, "10.244.1.20", func(p *corev1.Pod) { p.Status.Phase = corev1.PodSucceeded })
+	s.pod("crashed-0", map[string]string{"app": "job"}, "10.244.1.21", func(p *corev1.Pod) { p.Status.Phase = corev1.PodFailed })
+	s.pod("host-0", map[string]string{"app": "agent"}, "192.168.100.5", func(p *corev1.Pod) { p.Spec.HostNetwork = true })
+	svc := &corev1.Service{
+		Name: "web", Namespace: s.ns,
+		Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 80}}, Selector: map[string]string{"app": "web"}},
+	}
+	mustCreate(t, svc)
+	headless := &corev1.Service{
+		Name: "headless", Namespace: s.ns,
+		Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone, Ports: []corev1.ServicePort{{Port: 80}}},
+	}
+	mustCreate(t, headless)
+
+	s.pass(true, remote)
+	rep, err := s.m.For(s.sr).Report(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"10.244.1.5", "10.244.1.6", svc.Spec.ClusterIP}
+	slices.Sort(want)
+	if !slices.Equal(rep.Scope, want) {
+		t.Errorf("scope = %v, want the two pods of the tenant and the cluster IP of the Service: %v", rep.Scope, want)
 	}
 }
 

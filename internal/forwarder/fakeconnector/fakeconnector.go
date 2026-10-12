@@ -217,14 +217,36 @@ func (c *Connector) resolve(ctx context.Context, f *v1alpha1.Forwarder) (gateway
 		switch {
 		case workload.Matches(set):
 			gateways = append(gateways, ip)
-		case tenant.Matches(set):
+		case tenant.Matches(set) && reachable(p):
 			scope = append(scope, ip)
 			scopePods = append(scopePods, p)
 		}
 	}
+
+	// The cluster IP of a Service of the tenant is as much theirs as a pod is.
+	services := &corev1.ServiceList{}
+	if err := c.Client.List(ctx, services, client.InNamespace(f.Namespace)); err != nil {
+		return nil, nil, nil, fmt.Errorf("listing the services of %s: %w", f.Namespace, err)
+	}
+	for _, svc := range services.Items {
+		for _, raw := range svc.Spec.ClusterIPs {
+			if a, err := netip.ParseAddr(raw); err == nil && a.Is4() {
+				scope = append(scope, a.String())
+			}
+		}
+	}
+
 	slices.Sort(gateways)
 	slices.Sort(scope)
-	return gateways, scope, scopePods, nil
+	return gateways, slices.Compact(scope), scopePods, nil
+}
+
+// reachable is false for a pod whose address is not the tenant's to reach: one
+// that has finished, whose address is on its way back to the pool, and one on the
+// network of its node, whose address is the node's. (A pod that is being deleted
+// is left out by the caller.)
+func reachable(p corev1.Pod) bool {
+	return !p.Spec.HostNetwork && p.Status.Phase != corev1.PodSucceeded && p.Status.Phase != corev1.PodFailed
 }
 
 func address(p corev1.Pod) (string, bool) {
