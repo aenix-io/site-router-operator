@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-ovn-connector
+  namespace: site-router-kube-ovn-connector
+  labels:
+    app.kubernetes.io/name: kube-ovn-connector
+    app.kubernetes.io/part-of: site-router-operator
+spec:
+  # One replica writes at a time, by the lease; a second one only waits for it.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-ovn-connector
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: connector
+      labels:
+        app.kubernetes.io/name: kube-ovn-connector
+        app.kubernetes.io/part-of: site-router-operator
+    spec:
+      serviceAccountName: kube-ovn-connector
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: connector
+        image: kube-ovn-connector
+        args:
+        - --leader-elect
+        - --health-probe-bind-address=:8081
+        - --metrics-bind-address=:8443
+        ports:
+        - name: metrics
+          containerPort: 8443
+          protocol: TCP
+        - name: health
+          containerPort: 8081
+          protocol: TCP
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        # The connector caches every pod and Service of the cluster, trimmed to
+        # what it reads, and every Namespace: its memory grows with the cluster.
+        resources:
+          requests:
+            cpu: 10m
+            memory: 64Mi
+          limits:
+            memory: 512Mi
+      terminationGracePeriodSeconds: 10

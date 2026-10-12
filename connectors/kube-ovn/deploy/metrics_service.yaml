@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-ovn-connector-metrics
+  namespace: site-router-kube-ovn-connector
+  labels:
+    app.kubernetes.io/name: kube-ovn-connector
+    app.kubernetes.io/part-of: site-router-operator
+spec:
+  selector:
+    app.kubernetes.io/name: kube-ovn-connector
+  ports:
+  - name: https
+    port: 8443
+    protocol: TCP
+    targetPort: metrics

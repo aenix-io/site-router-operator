@@ -1,0 +1,60 @@
+# RBAC lets the connector patch any pod and any Namespace, and cannot narrow a
+# patch to an annotation. This policy does: what the connector changes on a pod
+# is the check of addresses of kube-ovn and the annotation that names the
+# Forwarder that turned it off, and on a Namespace its routes and the record of
+# their owners. A label of a Namespace sets the security level of its pods, and a
+# label of a pod is what the policies of the network select it by; neither is
+# the connector's to change, whatever the connector is made to do.
+#
+# The user is the ServiceAccount of the connector in the namespace the other
+# files name: change it together with them.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kube-ovn-connector-writes
+  labels:
+    app.kubernetes.io/name: kube-ovn-connector
+    app.kubernetes.io/part-of: site-router-operator
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["UPDATE"]
+      resources: ["pods", "namespaces"]
+  matchConditions:
+  - name: by-the-connector
+    expression: request.userInfo.username == "system:serviceaccount:site-router-kube-ovn-connector:kube-ovn-connector"
+  variables:
+  - name: own
+    expression: >-
+      request.resource.resource == "pods"
+        ? ["ovn.kubernetes.io/port_security", "kube-ovn.siterouter.aenix.io/granted-by"]
+        : ["ovn.kubernetes.io/routes", "kube-ovn.siterouter.aenix.io/route-owners"]
+  - name: before
+    expression: "has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {}"
+  - name: after
+    expression: "has(object.metadata.annotations) ? object.metadata.annotations : {}"
+  validations:
+  - expression: >-
+      variables.after.all(k, k in variables.own || (k in variables.before && variables.before[k] == variables.after[k])) &&
+      variables.before.all(k, k in variables.own || k in variables.after)
+    message: the connector changes no annotation but its own
+  - expression: >-
+      (has(object.metadata.labels) ? object.metadata.labels : {}) == (has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}) &&
+      (has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []) == (has(oldObject.metadata.ownerReferences) ? oldObject.metadata.ownerReferences : []) &&
+      (has(object.metadata.finalizers) ? object.metadata.finalizers : []) == (has(oldObject.metadata.finalizers) ? oldObject.metadata.finalizers : []) &&
+      object.spec == oldObject.spec
+    message: the connector changes nothing of a pod or a Namespace but annotations
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kube-ovn-connector-writes
+  labels:
+    app.kubernetes.io/name: kube-ovn-connector
+    app.kubernetes.io/part-of: site-router-operator
+spec:
+  policyName: kube-ovn-connector-writes
+  validationActions: [Deny]

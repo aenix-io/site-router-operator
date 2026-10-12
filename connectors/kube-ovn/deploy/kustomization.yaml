@@ -1,0 +1,26 @@
+# The connector for kube-ovn, ready to apply with `kubectl apply -k`. It needs
+# the CRD of the Forwarder, which the chart of the operator installs, and
+# KubeVirt, whose VirtualMachineInstances it reads.
+#
+# Each namespaced object names its namespace, site-router-kube-ovn-connector,
+# and the admission policy names the ServiceAccount of the connector in it. A
+# namespace set here would be put on the policy as well, which kustomize does
+# not know to be cluster-scoped, so it is not: change it in the files.
+resources:
+- namespace.yaml
+- service_account.yaml
+- rbac/role.yaml
+- rbac/role_binding.yaml
+- rbac/leader_election_role.yaml
+- rbac/leader_election_role_binding.yaml
+- rbac/metrics_auth_role.yaml
+- rbac/metrics_auth_role_binding.yaml
+- rbac/metrics_reader_role.yaml
+- admission_policy.yaml
+- deployment.yaml
+- metrics_service.yaml
+
+images:
+- name: kube-ovn-connector
+  newName: ghcr.io/aenix-io/site-router-kube-ovn-connector
+  newTag: latest
