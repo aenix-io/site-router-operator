@@ -27,10 +27,18 @@ import (
 
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/aenix-io/site-router-operator/api/v1alpha1"
+)
+
+// Config and Scheme are those of the apiserver Main started, for a test that runs a
+// manager against it. They are set before the tests run.
+var (
+	Config *rest.Config
+	Scheme *k8sruntime.Scheme
 )
 
 // Main starts an apiserver that serves the CRDs of the operator and those in
@@ -59,6 +67,7 @@ func Main(m *testing.M, set func(client.Client), crdDirs ...string) {
 		fmt.Fprintln(os.Stderr, "starting envtest:", err)
 		os.Exit(1)
 	}
+	Config, Scheme = cfg, scheme
 	c, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "creating a client:", err)
