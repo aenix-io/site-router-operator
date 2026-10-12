@@ -47,6 +47,7 @@ const (
 	ReasonValidationUnavailable = v1alpha1.ReasonValidationUnavailable
 	ReasonConfigureFailed       = v1alpha1.ReasonConfigureFailed
 	ReasonSourceFilterPending   = v1alpha1.ReasonSourceFilterPending
+	ReasonRoutesPending         = v1alpha1.ReasonRoutesPending
 
 	ReasonAccepted      = "Accepted"
 	ReasonConfigApplied = "ConfigApplied"
@@ -56,12 +57,25 @@ const (
 	ReasonObserveFailed = "ObserveFailed"
 )
 
-// Forwarder is what Step needs from the network seam: routes for the remote
-// CIDRs to the gateway, and their withdrawal. It is a narrow stand-in; the
-// Forwarder API replaces it.
-type Forwarder interface {
-	ApplyRoutes(ctx context.Context, instance string, cidrs []string, gateway string) error
-	WithdrawRoutes(ctx context.Context, instance string) error
+// Routes is what Step needs from the network seam for one instance: to ask for
+// the remote networks to be routed to the gateway, and to take that back.
+type Routes interface {
+	// Grant asks for cidrs to be routed to the gateway and for the gateway to be
+	// let forward traffic for them, and says how that stands. The request is
+	// idempotent. An error is for a request that could not be made; a request
+	// that was made and is not carried out yet is a RouteState that is not
+	// Programmed.
+	Grant(ctx context.Context, cidrs []string) (RouteState, error)
+	// Withdraw takes the routes and the grant away.
+	Withdraw(ctx context.Context) error
+}
+
+// RouteState is how the network stands with a request for routes. Reason and
+// Message are for a tenant to read.
+type RouteState struct {
+	Programmed bool
+	Reason     string
+	Message    string
 }
 
 // Validator rejects an instance before anything reaches the engine or the
@@ -83,9 +97,10 @@ var ErrValidationUnavailable = errors.New("validation is not available")
 // Instance is the input of one pass for one gateway.
 type Instance struct {
 	Name        string
-	GatewayIP   string
 	RemoteCIDRs []string
 	Desired     engine.Desired
+	// Routes is the network seam for this instance.
+	Routes Routes
 }
 
 // State is what the operator remembers between passes of one instance.
@@ -111,23 +126,20 @@ type Result struct {
 
 // Stepper runs passes.
 type Stepper struct {
-	engine    engine.Engine
-	forwarder Forwarder
-	validate  Validator
+	engine   engine.Engine
+	validate Validator
 }
 
-// New returns a Stepper. All three arguments are required: a missing validator
-// would silently accept anything, so it is refused instead.
-func New(eng engine.Engine, fwd Forwarder, validate Validator) (*Stepper, error) {
+// New returns a Stepper. Both arguments are required: a missing validator would
+// silently accept anything, so it is refused instead.
+func New(eng engine.Engine, validate Validator) (*Stepper, error) {
 	switch {
 	case eng == nil:
 		return nil, errors.New("reconcile: engine is required")
-	case fwd == nil:
-		return nil, errors.New("reconcile: forwarder is required")
 	case validate == nil:
 		return nil, errors.New("reconcile: validator is required")
 	}
-	return &Stepper{engine: eng, forwarder: fwd, validate: validate}, nil
+	return &Stepper{engine: eng, validate: validate}, nil
 }
 
 func set(r *Result, typ string, ok bool, reason, msg string) {
@@ -162,11 +174,18 @@ func redact(text string, secrets []string) string {
 // the tenant's traffic.
 func (s *Stepper) Step(ctx context.Context, ep engine.Endpoint, in Instance, st *State) Result {
 	res := Result{Conditions: map[string]Condition{}}
+	if in.Routes == nil {
+		// A fault of the caller, not of the tenant, so it is for the log; but
+		// nothing can be said to be programmed either.
+		res.Err = errors.New("reconcile: the instance has no Routes")
+		set(&res, CondRoutesProgrammed, false, ReasonRoutesFailed, "no network is set up to carry routes for this instance")
+		return res
+	}
 	secrets := append(in.Desired.Secrets(), ep.Secrets()...)
 	safe := func(err error) string { return redact(err.Error(), secrets) }
 	// withdraw takes the routes away and records a failure to do so.
 	withdraw := func() bool {
-		if werr := s.forwarder.WithdrawRoutes(ctx, in.Name); werr != nil {
+		if werr := in.Routes.Withdraw(ctx); werr != nil {
 			set(&res, CondRoutesProgrammed, false, ReasonRoutesFailed, "withdrawing routes: "+safe(werr))
 			return false
 		}
@@ -215,11 +234,22 @@ func (s *Stepper) Step(ctx context.Context, ep engine.Endpoint, in Instance, st 
 	}
 	set(&res, CondConfigured, true, ReasonConfigApplied, "")
 
-	if err := s.forwarder.ApplyRoutes(ctx, in.Name, in.RemoteCIDRs, in.GatewayIP); err != nil {
+	state, err := in.Routes.Grant(ctx, in.RemoteCIDRs)
+	if err != nil {
 		set(&res, CondRoutesProgrammed, false, ReasonRoutesFailed, safe(err))
 		return res
 	}
-	set(&res, CondRoutesProgrammed, true, ReasonProgrammed, "")
+	// What the network says is shown as it says it, redacted like the rest. The
+	// tunnel is observed whether or not the routes are in yet: a gateway that is
+	// not routed to can still be up.
+	reason := state.Reason
+	if reason == "" {
+		reason = ReasonRoutesPending
+		if state.Programmed {
+			reason = ReasonProgrammed
+		}
+	}
+	set(&res, CondRoutesProgrammed, state.Programmed, reason, redact(state.Message, secrets))
 
 	obs, err := sess.Observe(ctx)
 	if err != nil {
