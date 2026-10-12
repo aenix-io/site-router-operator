@@ -75,6 +75,11 @@ func of(gvk schema.GroupVersionKind) *unstructured.Unstructured {
 // cache of them would be a copy of most of the cluster. A gateway is found by the
 // label the operator puts on everything it makes; the VM carries it on its pod
 // template, so its instance does too.
+//
+// The cache is for waking the controller and for nothing else. An object that
+// someone else made under the name of one of the gateway has no such label, and the
+// cache does not show it, so nothing that decides whether an object is the
+// operator's is read from it.
 func CacheObjects() map[client.Object]cache.ByObject {
 	mine := cache.ByObject{Label: labels.SelectorFromSet(labels.Set{v1alpha1.LabelManagedBy: v1alpha1.ManagedByValue})}
 	return map[client.Object]cache.ByObject{

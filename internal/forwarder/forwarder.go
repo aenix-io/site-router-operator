@@ -45,10 +45,23 @@ const DefaultNotRespondingAfter = time.Minute
 // Manager keeps the Forwarders of the SiteRouters of a cluster.
 type Manager struct {
 	Client client.Client
+	// Reader reads the Forwarders. Whether a Forwarder is the SiteRouter's own is
+	// decided on what it returns, and an object it does not show is taken for one
+	// that is not there and applied over, so it must see every Forwarder: from the
+	// apiserver, not from a cache that holds only some of them. It is the Client
+	// when nil.
+	Reader client.Reader
 	// NotRespondingAfter is DefaultNotRespondingAfter when zero.
 	NotRespondingAfter time.Duration
 	// Now is the clock, and is time.Now when nil.
 	Now func() time.Time
+}
+
+func (m *Manager) reader() client.Reader {
+	if m.Reader != nil {
+		return m.Reader
+	}
+	return m.Client
 }
 
 func (m *Manager) now() time.Time {
@@ -182,7 +195,7 @@ func (r *Routes) Withdrawn(ctx context.Context) (bool, error) {
 func (r *Routes) get(ctx context.Context) (*v1alpha1.Forwarder, error) {
 	name := gateway.NamesFor(r.sr.Name).Forwarder
 	f := &v1alpha1.Forwarder{}
-	if err := r.m.Client.Get(ctx, client.ObjectKey{Namespace: r.sr.Namespace, Name: name}, f); err != nil {
+	if err := r.m.reader().Get(ctx, client.ObjectKey{Namespace: r.sr.Namespace, Name: name}, f); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}

@@ -91,7 +91,10 @@ type Options struct {
 	Client client.Client
 	// Reader reads everything else, from the apiserver and not from a cache: the
 	// Secrets, the Service of the tunnel and the VM of the gateway are not worth an
-	// informer on every namespace.
+	// informer on every namespace. It is also what decides whether an object is the
+	// operator's: the cache of the Client holds only what carries the label of the
+	// operator, so it does not show an object that someone else made under the name
+	// of one of the gateway, and one that is not shown is applied over.
 	Reader   client.Reader
 	Recorder events.EventRecorder
 	Config   config.Config
@@ -159,6 +162,7 @@ func New(o Options) (*Reconciler, error) {
 		applier:  &gateway.Applier{Client: o.Client},
 		forwarders: &forwarder.Manager{
 			Client:             o.Client,
+			Reader:             o.Reader,
 			NotRespondingAfter: o.Config.Timing.ForwarderNotResponding.Duration,
 			Now:                o.Now,
 		},

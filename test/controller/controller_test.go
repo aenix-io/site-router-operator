@@ -836,3 +836,36 @@ func TestWhatTheOperatorMadeItselfIsKeptOutOfAFailureToo(t *testing.T) {
 		})
 	}
 }
+
+// The cache of the operator holds only what carries its label, so a Forwarder that
+// someone else made under the name of the gateway is not in it. Applying over what
+// the cache does not show would take the object, whatever it was for.
+func TestAForwarderTheCacheDoesNotShowIsNotTakenOver(t *testing.T) {
+	g := newRig(t)
+	foreign := &v1alpha1.Forwarder{
+		Name: g.names().Forwarder, Namespace: g.ns,
+		Spec: v1alpha1.ForwarderSpec{
+			CIDRs:            []v1alpha1.IPv4CIDR{"198.18.0.0/24"},
+			WorkloadSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "other-gateway"}},
+			ScopeSelector:    metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}},
+		},
+	}
+	mustCreate(t, foreign)
+	g.tenantPod()
+	g.reconcile()
+	g.sync()
+	g.boot()
+	g.reconcile()
+	g.sync()
+	g.reconcile()
+
+	g.expect(v1alpha1.ConditionGatewayReady, metav1.ConditionFalse, v1alpha1.ReasonObjectConflict)
+	got := &v1alpha1.Forwarder{}
+	if err := k8sClient.Get(t.Context(), client.ObjectKeyFromObject(foreign), got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.OwnerReferences) != 0 || len(got.Labels) != 0 || got.Spec.WorkloadSelector.MatchLabels["app"] != "other-gateway" ||
+		len(got.Spec.CIDRs) != 1 || got.Spec.CIDRs[0] != "198.18.0.0/24" {
+		t.Errorf("the Forwarder of someone else was taken over: owners %v, labels %v, spec %+v", got.OwnerReferences, got.Labels, got.Spec)
+	}
+}

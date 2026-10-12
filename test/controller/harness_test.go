@@ -31,6 +31,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -175,7 +176,8 @@ func (s *spy) lastEndpoint() engine.Endpoint {
 }
 
 // counting is a client that counts the writes of a status, which a pass that
-// finds nothing different must not make.
+// finds nothing different must not make, and that reads as the cache of the manager
+// does.
 type counting struct {
 	client.Client
 	statusWrites atomic.Int32
@@ -196,6 +198,19 @@ func (c *counting) Create(ctx context.Context, obj client.Object, opts ...client
 		}
 	}
 	return c.Client.Create(ctx, obj, opts...)
+}
+
+// Get reads as the cache of the manager does: a Forwarder that does not carry the
+// label of the operator is not there. The operator's cache holds only what it made,
+// and what it makes nothing of is not shown to it.
+func (c *counting) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if err := c.Client.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if _, ok := obj.(*v1alpha1.Forwarder); ok && obj.GetLabels()[v1alpha1.LabelManagedBy] != v1alpha1.ManagedByValue {
+		return apierrors.NewNotFound(v1alpha1.GroupVersion.WithResource("forwarders").GroupResource(), key.Name)
+	}
+	return nil
 }
 
 func (c *counting) setFailCreate(f func(client.Object) error) {
