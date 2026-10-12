@@ -64,6 +64,9 @@ func newWorld(t *testing.T) *world {
 	t.Helper()
 	ns := &corev1.Namespace{GenerateName: "fw-"}
 	mustCreate(t, ns)
+	// Nothing makes the default ServiceAccount of a namespace here, and a pod
+	// cannot be made without it.
+	mustCreate(t, &corev1.ServiceAccount{Name: "default", Namespace: ns.Name})
 	sr := &v1alpha1.SiteRouter{
 		Name:      "branch-office",
 		Namespace: ns.Name,
