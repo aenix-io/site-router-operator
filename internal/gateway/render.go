@@ -66,6 +66,13 @@ const (
 // a cloud.
 const linkLocal = "169.254.0.0/16"
 
+// bindImmediately is the annotation that has CDI import a DataVolume without
+// waiting for a pod to use it. A storage class that binds a volume when a pod is
+// scheduled would otherwise leave the disk of another image unimported until the
+// gateway had already been moved to it, which is the one thing the import is
+// there to precede.
+const bindImmediately = "cdi.kubevirt.io/storage.bind.immediate.requested"
+
 // What recurs in the objects, which are built as maps.
 const (
 	fieldName   = "name"
@@ -310,6 +317,9 @@ func (r renderer) dataVolume(url string) *unstructured.Unstructured {
 		"storage":     storage,
 	})
 	r.forImage(disk)
+	a := disk.GetAnnotations()
+	a[bindImmediately] = "true"
+	disk.SetAnnotations(a)
 	return disk
 }
 

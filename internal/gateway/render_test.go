@@ -238,6 +238,21 @@ func TestManagementPortComesFromThePlan(t *testing.T) {
 	}
 }
 
+// The disk of another image is imported while the gateway still runs on the one it
+// has, so it must not wait for a pod that is going to use it: with a storage class
+// that binds a volume when a pod is scheduled, it would wait for ever.
+func TestTheDiskIsImportedWithNoPodToUseIt(t *testing.T) {
+	names := NamesFor("branch-office").ForImage(testImage)
+	dv := unstructuredOf(t, mustRender(t, newInput()), "DataVolume", names.BootDisk)
+	if got := dv.GetAnnotations()["cdi.kubevirt.io/storage.bind.immediate.requested"]; got != "true" {
+		t.Errorf("the DataVolume asks for immediate binding with %q, want \"true\"", got)
+	}
+	// What says the disk is for this image is still there.
+	if dv.GetAnnotations()[v1alpha1.AnnotationImageDigest] == "" {
+		t.Error("the DataVolume lost the digest of its image")
+	}
+}
+
 func TestStorageClassOfTheSiteRouterWinsOverThePlatforms(t *testing.T) {
 	names := NamesFor("branch-office").ForImage(testImage)
 	for name, c := range map[string]struct{ spec, platform, want string }{

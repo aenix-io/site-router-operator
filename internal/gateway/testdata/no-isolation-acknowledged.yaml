@@ -64,6 +64,7 @@ apiVersion: cdi.kubevirt.io/v1beta1
 kind: DataVolume
 metadata:
   annotations:
+    cdi.kubevirt.io/storage.bind.immediate.requested: "true"
     siterouter.aenix.io/image-digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   labels:
     app.kubernetes.io/managed-by: site-router-operator
