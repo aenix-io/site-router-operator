@@ -181,6 +181,13 @@ func (in Input) check() error {
 	return nil
 }
 
+// CheckImage says whether image is a reference the gateway can be made from: one
+// pinned by a digest.
+func CheckImage(image string) error {
+	_, err := registryURL(image)
+	return err
+}
+
 var (
 	digestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	tagRE    = regexp.MustCompile(`:[^:/]+$`)
