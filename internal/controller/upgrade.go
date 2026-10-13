@@ -205,9 +205,11 @@ func (r *Reconciler) boot(ctx context.Context, sr *v1alpha1.SiteRouter, vmi *vmi
 func (r *Reconciler) cleanup(ctx context.Context, sr *v1alpha1.SiteRouter, keep gateway.Names) error {
 	selector := client.MatchingLabels(gateway.Labels(sr.Name))
 
+	// The disks are found by the label of a disk, which is not the instance label
+	// of the rest.
 	disks := &unstructured.UnstructuredList{}
 	disks.SetGroupVersionKind(gateway.DataVolumeGVK.GroupVersion().WithKind("DataVolumeList"))
-	if err := r.reader.List(ctx, disks, client.InNamespace(sr.Namespace), selector); err != nil {
+	if err := r.reader.List(ctx, disks, client.InNamespace(sr.Namespace), client.MatchingLabels(gateway.DiskLabels(sr.Name))); err != nil {
 		return fmt.Errorf("listing the disks: %w", err)
 	}
 	for i := range disks.Items {

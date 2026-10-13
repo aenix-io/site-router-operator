@@ -248,6 +248,25 @@ func TestAssertInvariantsSeesWhatIsBroken(t *testing.T) {
 			return o
 		}, `asks for "10Gi"`},
 
+		// CDI hands the labels of a disk to the pod that imports it, and the pod that
+		// carries the instance label is the gateway to the policies that close its
+		// egress. A disk with it would have its own importer cut off from the registry.
+		{"a disk that carries the instance label", func(t *testing.T, o []client.Object) []client.Object {
+			dv(t, o).SetLabels(map[string]string{
+				v1alpha1.LabelManagedBy:  v1alpha1.ManagedByValue,
+				v1alpha1.LabelBootDiskOf: "branch-office",
+				v1alpha1.LabelInstance:   "branch-office",
+			})
+			return o
+		}, "carries the label siterouter.aenix.io/instance, which CDI would hand to the pod"},
+		{"a disk that does not carry its own label", func(t *testing.T, o []client.Object) []client.Object {
+			dv(t, o).SetLabels(map[string]string{v1alpha1.LabelManagedBy: v1alpha1.ManagedByValue})
+			return o
+		}, "does not carry the label siterouter.aenix.io/boot-disk-of"},
+		{"a disk of another instance", func(t *testing.T, o []client.Object) []client.Object {
+			dv(t, o).SetLabels(DiskLabels("other"))
+			return o
+		}, "does not carry the label siterouter.aenix.io/boot-disk-of"},
 		{"a disk that does not say which image it is for", func(t *testing.T, o []client.Object) []client.Object {
 			unstructured.RemoveNestedField(dv(t, o).Object, "metadata", "annotations", v1alpha1.AnnotationImageDigest)
 			return o

@@ -18,11 +18,19 @@ package v1alpha1
 
 // Labels the operator puts on what it creates.
 const (
-	// LabelInstance is set on every object the operator creates for a SiteRouter
-	// and on the pod template of its gateway VM, with the name of the SiteRouter
-	// as the value. It is how the pods of a gateway are found, by the Service in
-	// front of them, by the network policies and by a Forwarder.
+	// LabelInstance is set on every object the operator creates for a SiteRouter,
+	// except its boot disk, and on the pod template of its gateway VM, with the name
+	// of the SiteRouter as the value. It is how the pods of a gateway are found, by
+	// the Service in front of them, by the network policies and by a Forwarder.
 	LabelInstance = "siterouter.aenix.io/instance"
+
+	// LabelBootDiskOf is set on the boot disk of a gateway, with the name of the
+	// SiteRouter as the value, where every other object carries LabelInstance. CDI
+	// copies the labels of a DataVolume to the pod that imports it, and a pod that
+	// carries LabelInstance is taken for the gateway: the network policies, which
+	// close its egress, the Service and a Forwarder select by it. The pod that
+	// imports the image of the gateway is none of those.
+	LabelBootDiskOf = "siterouter.aenix.io/boot-disk-of"
 
 	// LabelManagedBy is the standard label that names the manager of an object.
 	LabelManagedBy = "app.kubernetes.io/managed-by"

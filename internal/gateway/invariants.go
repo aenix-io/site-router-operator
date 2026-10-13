@@ -114,7 +114,9 @@ func (a *audit) common(key string, m map[string]any) {
 	if labels[v1alpha1.LabelManagedBy] != v1alpha1.ManagedByValue {
 		a.fail(key, "does not carry the label %s=%s", v1alpha1.LabelManagedBy, v1alpha1.ManagedByValue)
 	}
-	if labels[v1alpha1.LabelInstance] != sr.Name {
+	// The boot disk is the one object that does not carry the instance label, and is
+	// checked for not carrying it with the rest of what is said about it.
+	if str(m, "kind") != DataVolumeGVK.Kind && labels[v1alpha1.LabelInstance] != sr.Name {
 		a.fail(key, "does not carry the label %s=%s", v1alpha1.LabelInstance, sr.Name)
 	}
 	owners := list(m, "metadata", "ownerReferences")
@@ -211,6 +213,16 @@ func (a *audit) dataVolume() {
 	m, ok := a.byKey[key]
 	if !ok {
 		return
+	}
+	// CDI gives the pod that imports the disk the labels of the disk. With the
+	// instance label on it, that pod would be taken for the gateway by the network
+	// policies, the Service and the Forwarder, and would lose its egress.
+	labels := strMap(m, "metadata", "labels")
+	if _, ok := labels[v1alpha1.LabelInstance]; ok {
+		a.fail(key, "carries the label %s, which CDI would hand to the pod that imports the disk, and which makes a pod the gateway", v1alpha1.LabelInstance)
+	}
+	if labels[v1alpha1.LabelBootDiskOf] != a.in.Instance.Name {
+		a.fail(key, "does not carry the label %s=%s", v1alpha1.LabelBootDiskOf, a.in.Instance.Name)
 	}
 	want, err := registryURL(a.in.Image)
 	if err != nil {

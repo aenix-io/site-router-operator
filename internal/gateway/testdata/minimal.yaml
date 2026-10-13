@@ -68,7 +68,7 @@ metadata:
     siterouter.aenix.io/image-digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   labels:
     app.kubernetes.io/managed-by: site-router-operator
-    siterouter.aenix.io/instance: branch-office
+    siterouter.aenix.io/boot-disk-of: branch-office
   name: site-router-branch-office-boot-0123
   namespace: tenant-a
   ownerReferences:

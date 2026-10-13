@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/aenix-io/site-router-operator/api/engine"
@@ -250,6 +251,33 @@ func TestTheDiskIsImportedWithNoPodToUseIt(t *testing.T) {
 	// What says the disk is for this image is still there.
 	if dv.GetAnnotations()[v1alpha1.AnnotationImageDigest] == "" {
 		t.Error("the DataVolume lost the digest of its image")
+	}
+}
+
+// CDI gives the pod that imports a disk the labels of the DataVolume. A pod that
+// carries the instance label is the gateway to the policies that close the egress
+// of the gateway, to the Service in front of it and to the Forwarder, so the
+// importer of the gateway's own image would be cut off from the registry it reads
+// the image from. Found on a cluster: the import never finished.
+func TestNothingThatCDICopiesToAPodCarriesTheInstanceLabel(t *testing.T) {
+	names := NamesFor("branch-office").ForImage(testImage)
+	objs := mustRender(t, newInput())
+	dv := unstructuredOf(t, objs, "DataVolume", names.BootDisk)
+	if _, ok := dv.GetLabels()[v1alpha1.LabelInstance]; ok {
+		t.Errorf("the disk carries %s, which CDI copies to its importer pod: %v", v1alpha1.LabelInstance, dv.GetLabels())
+	}
+	if got := dv.GetLabels()[v1alpha1.LabelBootDiskOf]; got != "branch-office" {
+		t.Errorf("the disk says it is the disk of %q, want %q", got, "branch-office")
+	}
+	if got := dv.GetLabels()[v1alpha1.LabelManagedBy]; got != v1alpha1.ManagedByValue {
+		t.Errorf("the disk is managed by %q, want %q", got, v1alpha1.ManagedByValue)
+	}
+	// The VM is the other way round: its pod template is what the policies and the
+	// Service are meant to select, and it still carries the label.
+	vm := unstructuredOf(t, objs, "VirtualMachine", names.VM)
+	podLabels, _, _ := unstructured.NestedStringMap(vm.Object, "spec", "template", "metadata", "labels")
+	if podLabels[v1alpha1.LabelInstance] != "branch-office" {
+		t.Errorf("the pod template of the gateway lost %s: %v", v1alpha1.LabelInstance, podLabels)
 	}
 }
 

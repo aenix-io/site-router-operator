@@ -316,6 +316,7 @@ func (r renderer) dataVolume(url string) *unstructured.Unstructured {
 		"source":      map[string]any{"registry": registry},
 		"storage":     storage,
 	})
+	disk.SetLabels(DiskLabels(r.in.Instance.Name))
 	r.forImage(disk)
 	a := disk.GetAnnotations()
 	a[bindImmediately] = "true"

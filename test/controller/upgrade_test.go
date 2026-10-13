@@ -644,7 +644,7 @@ func TestWhatIsNotTheOperatorsIsLeftWhenTheOldImageGoes(t *testing.T) {
 	other.SetGroupVersionKind(gateway.DataVolumeGVK)
 	other.SetName(foreignDisk)
 	other.SetNamespace(g.ns)
-	other.SetLabels(gateway.Labels(name))
+	other.SetLabels(gateway.DiskLabels(name))
 	other.SetAnnotations(map[string]string{v1alpha1.AnnotationImageDigest: "sha256:" + strings.Repeat("00", 32)})
 	mustCreate(t, other)
 	foreignSeed := &corev1.Secret{
