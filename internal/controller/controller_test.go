@@ -123,6 +123,18 @@ func TestWhatAPassDoesNotSayIsUnknown(t *testing.T) {
 	}
 }
 
+// A condition is stamped with the clock of the controller, since the time a move
+// began is read back from one and compared with that clock.
+func TestAConditionIsStampedWithTheClockOfTheController(t *testing.T) {
+	at := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	c := newConditions(nil, 1)
+	c.now = func() time.Time { return at }
+	c.set(v1alpha1.ConditionValidated, true, "Accepted", "")
+	if got := find(t, c.list, v1alpha1.ConditionValidated).LastTransitionTime.Time; !got.Equal(at) {
+		t.Errorf("stamped %v, want %v", got, at)
+	}
+}
+
 // The time a condition changed at is kept while it does not change, and moves when
 // it does; what it says moves with the pass.
 func TestAConditionKeepsItsTimeWhileItDoesNotChange(t *testing.T) {

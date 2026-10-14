@@ -263,6 +263,7 @@ func (r *Reconciler) pass(ctx context.Context, sr *v1alpha1.SiteRouter) outcome 
 	st := *sr.Status.DeepCopy()
 	st.ObservedGeneration = sr.Generation
 	conds := newConditions(sr.Status.Conditions, sr.Generation)
+	conds.now = r.now
 	out := outcome{requeue: r.config.Timing.Poll.Duration}
 
 	gw := r.makeGateway(ctx, sr, &st)

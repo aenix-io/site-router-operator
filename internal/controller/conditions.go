@@ -17,6 +17,8 @@ limitations under the License.
 package controller
 
 import (
+	"time"
+
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -55,6 +57,10 @@ type conditions struct {
 	list       []metav1.Condition
 	generation int64
 	said       map[string]bool
+	// now is the clock a condition is stamped with. It is the clock the controller
+	// decides by, because the time a move began is read back from a condition and
+	// compared with that clock.
+	now func() time.Time
 }
 
 func newConditions(from []metav1.Condition, generation int64) *conditions {
@@ -62,6 +68,7 @@ func newConditions(from []metav1.Condition, generation int64) *conditions {
 		list:       append([]metav1.Condition(nil), from...),
 		generation: generation,
 		said:       map[string]bool{},
+		now:        time.Now,
 	}
 }
 
@@ -72,6 +79,7 @@ func (c *conditions) put(typ string, status metav1.ConditionStatus, reason, msg 
 	c.said[typ] = true
 	meta.SetStatusCondition(&c.list, metav1.Condition{
 		Type: typ, Status: status, Reason: reason, Message: msg, ObservedGeneration: c.generation,
+		LastTransitionTime: metav1.NewTime(c.now()),
 	})
 }
 
