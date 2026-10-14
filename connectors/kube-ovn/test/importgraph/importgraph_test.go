@@ -31,6 +31,9 @@ const (
 	repository = "github.com/aenix-io/site-router-operator"
 	self       = repository + "/connectors/kube-ovn"
 	api        = repository + "/api"
+	// conformance is the suite a connector is held to. The connector runs it in its
+	// tests, and nothing of what it ships imports it.
+	conformance = repository + "/connectors/conformance"
 )
 
 // forbidden are substrings of import paths that nothing of the connector may
@@ -43,7 +46,8 @@ func violations(deps []string) []string {
 	for _, dep := range deps {
 		lower := strings.ToLower(dep)
 		ours := dep == repository || strings.HasPrefix(dep, repository+"/")
-		allowed := dep == self || strings.HasPrefix(dep, self+"/") || dep == api || strings.HasPrefix(dep, api+"/")
+		allowed := dep == self || strings.HasPrefix(dep, self+"/") || dep == api || strings.HasPrefix(dep, api+"/") ||
+			dep == conformance || strings.HasPrefix(dep, conformance+"/")
 		if (ours && !allowed) || slices.ContainsFunc(forbidden, func(f string) bool { return strings.Contains(lower, f) }) {
 			found = append(found, dep)
 		}
@@ -56,6 +60,7 @@ func TestViolations(t *testing.T) {
 		"sigs.k8s.io/controller-runtime",
 		api + "/v1alpha1",
 		self + "/internal/routes",
+		conformance,
 		repository + "/internal/gateway",
 		repository + "/connectors/other/internal/x",
 		repository,

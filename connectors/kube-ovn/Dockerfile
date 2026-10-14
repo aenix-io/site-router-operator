@@ -1,5 +1,6 @@
 # Build the connector for kube-ovn. The context is the root of the repository:
-# the module replaces the api module with ../../api, so both have to be in it.
+# the module replaces the api module with ../../api and the suite of connectors with
+# ../conformance, so all three have to be in it.
 # Dockerfile.dockerignore, next to this file, says what of the context is sent.
 #
 #   docker build -f connectors/kube-ovn/Dockerfile .
@@ -16,10 +17,12 @@ WORKDIR /workspace
 # The module manifests first, so that the dependencies are downloaded in a layer
 # of their own that a change of the source does not invalidate.
 COPY api/go.* api/
+COPY connectors/conformance/go.* connectors/conformance/
 COPY connectors/kube-ovn/go.mod connectors/kube-ovn/go.sum connectors/kube-ovn/
 RUN cd connectors/kube-ovn && go mod download
 
 COPY api/ api/
+COPY connectors/conformance/ connectors/conformance/
 COPY connectors/kube-ovn/ connectors/kube-ovn/
 RUN cd connectors/kube-ovn && \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -o /kube-ovn-connector ./cmd

@@ -117,6 +117,12 @@ crds:
   # kept when the release is uninstalled or this is turned off: deleting them
   # would delete every SiteRouter, and with it every gateway.
   install: true
+  forwarder:
+    # Install the CRD of Forwarder, when crds.install is on. Turn it off where
+    # the platform serves the Forwarder API itself, with the connectors of its
+    # network: the operator then uses the CRD that is there. A CRD that is not
+    # the one of this chart's version is not checked.
+    install: true
 
 # The configuration of the operator: what the platform decides about gateways
 # and a SiteRouter does not say. It is written to a ConfigMap as is and read by

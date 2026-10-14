@@ -104,7 +104,14 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "install": {"type": "boolean"}
+        "install": {"type": "boolean"},
+        "forwarder": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "install": {"type": "boolean"}
+          }
+        }
       }
     },
     "config": {

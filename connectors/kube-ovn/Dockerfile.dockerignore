@@ -4,6 +4,9 @@
 !api/**/*.go
 !api/go.mod
 !api/go.sum
+!connectors/conformance/**/*.go
+!connectors/conformance/go.mod
+!connectors/conformance/go.sum
 !connectors/kube-ovn/**/*.go
 !connectors/kube-ovn/go.mod
 !connectors/kube-ovn/go.sum

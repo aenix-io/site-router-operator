@@ -300,6 +300,9 @@ type rig struct {
 	name string
 	// writes is the client of the reconciler, which counts what it writes.
 	writes *counting
+	// network is how the reconciler asks the cluster network for routes, the
+	// Forwarder API when nil.
+	network controller.NetworkOf
 	// vmiDisk is the disk the next instance boots from when it is not the one the VM
 	// says, as it is when the VM was pointed at another disk and the instance was
 	// not made again.
@@ -378,6 +381,7 @@ func (g *rig) build(cfg config.Config) {
 		Config:   cfg,
 		Engine:   g.spy,
 		Networks: source,
+		Network:  g.network,
 		Metrics:  controller.NewMetrics(g.reg),
 		Now:      clock,
 	})

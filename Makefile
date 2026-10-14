@@ -4,10 +4,11 @@ IMG ?= ghcr.io/aenix-io/site-router-operator:latest
 # instead of taken from the clock: a moving year would change every generated file
 # each January and fail the generated-files check on unrelated pull requests.
 YEAR ?= 2026
-# The repository holds three Go modules: the operator (.), its public API (api)
-# and the connector for kube-ovn (connectors/kube-ovn), which has a Makefile of
-# its own that the targets below call for what is its alone.
-MODULES := . api connectors/kube-ovn
+# The repository holds four Go modules: the operator (.), its public API (api),
+# the connector for kube-ovn (connectors/kube-ovn), which has a Makefile of its
+# own that the targets below call for what is its alone, and the suite that a
+# connector is held to (connectors/conformance).
+MODULES := . api connectors/kube-ovn connectors/conformance
 CONNECTORS := connectors/kube-ovn
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)

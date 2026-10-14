@@ -52,4 +52,4 @@ make test   # unit tests and tests on a real apiserver, with -race
 make lint
 ```
 
-The tests on a real apiserver run the connector as its ServiceAccount, with the generated ClusterRole and the admission policy of `deploy/`. There is no kube-ovn and no webhook in them: a pod is made the way the webhook would make it.
+The connector runs the suite of `connectors/conformance`, which holds every connector of the `Forwarder` API to the contract in `docs/connector-contract.md` (`test/e2e/conformance_test.go`), besides tests of what is kube-ovn's alone. The tests on a real apiserver run the connector as its ServiceAccount, with the generated ClusterRole and the admission policy of `deploy/`. There is no kube-ovn and no webhook in them: a pod is made the way the webhook would make it.
