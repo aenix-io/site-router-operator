@@ -20,7 +20,9 @@ resources:
 - deployment.yaml
 - metrics_service.yaml
 
+# The image of the release this commit belongs to. The release workflow refuses a
+# tag whose manifests name another version, so a tag can be applied as it is.
 images:
 - name: kube-ovn-connector
   newName: ghcr.io/aenix-io/site-router-kube-ovn-connector
-  newTag: latest
+  newTag: "0.1.1"

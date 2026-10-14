@@ -7,7 +7,7 @@ The operator is installed with the Helm chart in `charts/site-router-operator`. 
 - Kubernetes 1.31 or newer: the CRDs validate networks with the CEL library that first shipped in 1.31, and the chart refuses an older cluster.
 - KubeVirt and CDI, which run the gateways and import their disks. The operator watches VirtualMachines and their instances, so their CRDs must be installed before it starts.
 - Cilium, when the gateways are isolated with `config.gateway.isolation.mode: cilium`, the default.
-- A connector for the network of the cluster, which serves the `Forwarder` objects the operator writes. Without one, routes are asked for and never programmed.
+- A connector for the network of the cluster, which serves the `Forwarder` objects the operator writes. Without one, routes are asked for and never programmed. The connector for kube-ovn is released with the operator, under the same version, and `connectors/kube-ovn/README.md` says how it is installed.
 - An engine for the appliance the gateways run, built into the image (`cmd/engines.go`). An operator whose configuration names an engine the image does not carry stops at start and says that the engine is not registered.
 
 ## Install

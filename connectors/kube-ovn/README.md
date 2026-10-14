@@ -37,7 +37,13 @@ make docker-buildx IMG=<registry>/<image>:<tag> PLATFORMS=linux/amd64,linux/arm6
 
 ## Deploy
 
-Set the image in `deploy/kustomization.yaml` (`images`), then:
+A release publishes the image `ghcr.io/aenix-io/site-router-kube-ovn-connector:<version>` for linux/amd64 and linux/arm64, under the version of the operator and signed like it, and the `deploy/` of a tag names the image of that tag, so a release is installed as it is:
+
+```sh
+kubectl apply -k 'github.com/aenix-io/site-router-operator/connectors/kube-ovn/deploy?ref=v<version>'
+```
+
+To run another image, set it in `deploy/kustomization.yaml` (`images`), then apply the directory:
 
 ```sh
 kubectl apply -k deploy
