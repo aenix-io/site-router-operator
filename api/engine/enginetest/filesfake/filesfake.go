@@ -95,7 +95,7 @@ func (e Engine) Bootstrap(r engine.BootstrapRequest) (engine.BootstrapPlan, erro
 	return engine.BootstrapPlan{
 		Arch:           "amd64",
 		DiskGiB:        8,
-		SeedFiles:      map[string][]byte{"user-data": []byte("#cloud-config\n# " + r.Instance + " " + r.Version)},
+		SeedFiles:      map[string][]byte{engine.SeedUserData: []byte("#cloud-config\n# " + r.Instance + " " + r.Version)},
 		Credentials:    creds,
 		ManagementPort: 22,
 	}, nil

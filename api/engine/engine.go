@@ -171,12 +171,20 @@ type BootstrapRequest struct {
 // an image the engine can already drive is applied without rebuilding the
 // operator.
 type BootstrapPlan struct {
-	Arch           string
-	DiskGiB        int
+	Arch    string
+	DiskGiB int
+	// SeedFiles is what the gateway reads at first boot. The operator hands it
+	// over as a Secret, key by key, and the guest finds there the file under
+	// SeedUserData; a plan without one boots a guest with no configuration.
 	SeedFiles      map[string][]byte
 	Credentials    map[string][]byte
 	ManagementPort int
 }
+
+// SeedUserData is the key in BootstrapPlan.SeedFiles of the file the guest
+// takes as its configuration at first boot: the user data of a cloud-init
+// NoCloud datasource, which is the name KubeVirt looks for in the Secret.
+const SeedUserData = "userdata"
 
 // Engine knows one kind of appliance.
 type Engine interface {

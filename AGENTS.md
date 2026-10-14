@@ -25,7 +25,7 @@ The operator is not tied to Cozystack, to a particular appliance or to a particu
 
 - Two Go modules: the operator (`.`) and its public API (`api/`, import path `github.com/aenix-io/site-router-operator/api`). The root `go.mod` replaces `api` with `./api`. Run Go commands for the API from `api/`. The API group is `siterouter.aenix.io`.
 - `make manifests generate` regenerates CRDs, RBAC and deepcopy code. `make check-generated` fails when they, or `go.mod` and `go.sum`, are stale; run it in a tree with no uncommitted changes.
-- `make test` runs unit and envtest tests with `-race` in both modules. `make test-crd` runs the CRD schema tests on Kubernetes 1.31, 1.34 and the newest supported version; the CEL rules are tested on a real apiserver, because older apiservers estimate their cost differently and can refuse a CRD that a newer one accepts. `make lint` runs golangci-lint in both.
+- `make test` runs unit and envtest tests with `-race` in both modules. `make test-crd` runs the CRD schema tests and the tests that apply a gateway on Kubernetes 1.31, 1.34 and the newest supported version; the CEL rules are tested on a real apiserver, because older apiservers estimate their cost differently and can refuse a CRD that a newer one accepts. `make lint` runs golangci-lint in both.
 - `make check-commits` checks commit messages against the rules below. CI runs the same `hack/check-commits.sh` on every pull request.
 
 ## Conventions

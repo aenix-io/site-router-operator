@@ -20,6 +20,8 @@ limitations under the License.
 package enginetest
 
 import (
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/aenix-io/site-router-operator/api/engine"
@@ -130,8 +132,11 @@ func testBootstrapPerVersion(t *testing.T, r Rig) {
 		if err != nil {
 			t.Fatalf("Bootstrap(%s): %v", v, err)
 		}
-		if p.Arch == "" || p.DiskGiB <= 0 || p.ManagementPort <= 0 || len(p.SeedFiles) == 0 || len(p.Credentials) == 0 {
+		if p.Arch == "" || p.DiskGiB <= 0 || p.ManagementPort <= 0 || len(p.Credentials) == 0 {
 			t.Errorf("%s: incomplete plan: %+v", v, p)
+		}
+		if len(p.SeedFiles[engine.SeedUserData]) == 0 {
+			t.Errorf("%s: the seed has no %q file, which is the one the guest reads: %v", v, engine.SeedUserData, slices.Sorted(maps.Keys(p.SeedFiles)))
 		}
 	}
 }

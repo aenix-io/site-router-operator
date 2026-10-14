@@ -1,0 +1,240 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: site-router-operator
+    siterouter.aenix.io/instance: branch-office
+  name: site-router-branch-office-api-key
+  namespace: tenant-a
+  ownerReferences:
+  - apiVersion: siterouter.aenix.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: SiteRouter
+    name: branch-office
+    uid: 11111111-2222-4333-8444-555555555555
+stringData:
+  tls.key: tls-key-fedcba9876543210
+  tls.servername: branch-office.tenant-a.gateway.internal
+  token: api-token-0123456789abcdef
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: site-router-operator
+    siterouter.aenix.io/instance: branch-office
+  name: site-router-branch-office-cloud-init
+  namespace: tenant-a
+  ownerReferences:
+  - apiVersion: siterouter.aenix.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: SiteRouter
+    name: branch-office
+    uid: 11111111-2222-4333-8444-555555555555
+stringData:
+  userdata: |
+    # seed for branch-office
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: site-router-operator
+    siterouter.aenix.io/instance: branch-office
+  name: site-router-branch-office-psk
+  namespace: tenant-a
+  ownerReferences:
+  - apiVersion: siterouter.aenix.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: SiteRouter
+    name: branch-office
+    uid: 11111111-2222-4333-8444-555555555555
+stringData:
+  psk: psk-0123456789abcdefghijklmnopqrstuv
+type: Opaque
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: site-router-operator
+    siterouter.aenix.io/instance: branch-office
+  name: site-router-branch-office-boot
+  namespace: tenant-a
+  ownerReferences:
+  - apiVersion: siterouter.aenix.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: SiteRouter
+    name: branch-office
+    uid: 11111111-2222-4333-8444-555555555555
+spec:
+  contentType: kubevirt
+  source:
+    registry:
+      url: docker://registry.example/appliances/gateway-disk@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  storage:
+    resources:
+      requests:
+        storage: 12Gi
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: site-router-operator
+    siterouter.aenix.io/instance: branch-office
+  name: site-router-branch-office
+  namespace: tenant-a
+  ownerReferences:
+  - apiVersion: siterouter.aenix.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: SiteRouter
+    name: branch-office
+    uid: 11111111-2222-4333-8444-555555555555
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      annotations:
+        kubevirt.io/allow-pod-bridge-network-live-migration: "true"
+      labels:
+        app.kubernetes.io/managed-by: site-router-operator
+        siterouter.aenix.io/instance: branch-office
+    spec:
+      domain:
+        cpu:
+          cores: 2
+          sockets: 1
+          threads: 1
+        devices:
+          disks:
+          - blockSize:
+              custom:
+                logical: 512
+                physical: 4096
+            bootOrder: 1
+            disk:
+              bus: virtio
+            name: boot
+          - disk: {}
+            name: cloudinitdisk
+          interfaces:
+          - bridge: {}
+            name: default
+        firmware:
+          uuid: 11111111-2222-4333-8444-555555555555
+        machine:
+          type: ""
+        memory:
+          guest: 2Gi
+      networks:
+      - name: default
+        pod: {}
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - dataVolume:
+          name: site-router-branch-office-boot
+        name: boot
+      - cloudInitNoCloud:
+          secretRef:
+            name: site-router-branch-office-cloud-init
+        name: cloudinitdisk
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: site-router-operator
+    siterouter.aenix.io/instance: branch-office
+  name: site-router-branch-office-tunnel
+  namespace: tenant-a
+  ownerReferences:
+  - apiVersion: siterouter.aenix.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: SiteRouter
+    name: branch-office
+    uid: 11111111-2222-4333-8444-555555555555
+spec:
+  externalTrafficPolicy: Local
+  ports:
+  - name: isakmp
+    port: 500
+    protocol: UDP
+    targetPort: 500
+  - name: ipsec-nat-t
+    port: 4500
+    protocol: UDP
+    targetPort: 4500
+  selector:
+    siterouter.aenix.io/instance: branch-office
+  type: LoadBalancer
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: site-router-operator
+    siterouter.aenix.io/instance: branch-office
+  name: site-router-branch-office-gateway-egress-deny
+  namespace: tenant-a
+  ownerReferences:
+  - apiVersion: siterouter.aenix.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: SiteRouter
+    name: branch-office
+    uid: 11111111-2222-4333-8444-555555555555
+spec:
+  egressDeny:
+  - toCIDR:
+    - 169.254.0.0/16
+  endpointSelector:
+    matchLabels:
+      siterouter.aenix.io/instance: branch-office
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: site-router-operator
+    siterouter.aenix.io/instance: branch-office
+  name: site-router-branch-office-gateway-ingress
+  namespace: tenant-a
+  ownerReferences:
+  - apiVersion: siterouter.aenix.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: SiteRouter
+    name: branch-office
+    uid: 11111111-2222-4333-8444-555555555555
+spec:
+  endpointSelector:
+    matchLabels:
+      siterouter.aenix.io/instance: branch-office
+  ingress:
+  - fromEntities:
+    - world
+    toPorts:
+    - ports:
+      - port: "500"
+        protocol: UDP
+      - port: "4500"
+        protocol: UDP
+  - fromEndpoints:
+    - matchLabels:
+        k8s:app.kubernetes.io/name: site-router-operator
+        k8s:io.kubernetes.pod.namespace: site-router-system
+    toPorts:
+    - ports:
+      - port: "443"
+        protocol: TCP
