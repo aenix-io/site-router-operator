@@ -32,8 +32,9 @@ const (
 // Reasons of a SiteRouter condition that is False, or informational.
 const (
 	// Validated.
-	ReasonInvalidRemoteCIDR = "InvalidRemoteCIDR"
-	ReasonPeerNotConfigured = "PeerNotConfigured"
+	ReasonInvalidRemoteCIDR     = "InvalidRemoteCIDR"
+	ReasonPeerNotConfigured     = "PeerNotConfigured"
+	ReasonValidationUnavailable = "ValidationUnavailable"
 
 	// GatewayReady.
 	ReasonGatewayPending       = "GatewayPending"
@@ -50,8 +51,12 @@ const (
 
 	// RoutesProgrammed.
 	ReasonForwarderNotResponding = "ForwarderNotResponding"
+	ReasonForwarderRejected      = "ForwarderRejected"
 	ReasonRouteConflict          = "RouteConflict"
 	ReasonPendingWorkloads       = "PendingWorkloads"
+	// ReasonRoutesPending: the connector has the request and has not carried it
+	// out yet.
+	ReasonRoutesPending = "RoutesPending"
 )
 
 // Condition types of a Forwarder, set by the connector that serves it.

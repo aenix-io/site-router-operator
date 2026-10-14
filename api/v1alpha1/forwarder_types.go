@@ -32,6 +32,15 @@ import (
 type ForwarderSpec struct {
 	// workloadSelector selects the pods that forward: the gateway.
 	//
+	// A label is written by whoever makes the pod, so a pod that carries the label
+	// is not for that reason the gateway. A connector grants forwarding, and with
+	// it an end to the anti-spoofing of the network, only to a selected pod that
+	// is also the pod of the VirtualMachineInstance of the gateway: the one named
+	// like the Forwarder, which controls it. An owner reference can be written by
+	// whoever makes the pod as well, so where the network can, it checks the pod
+	// against the active pods in the status of that VirtualMachineInstance, which
+	// only KubeVirt writes.
+	//
 	// +required
 	WorkloadSelector metav1.LabelSelector `json:"workloadSelector"`
 
@@ -81,8 +90,13 @@ type ForwarderStatus struct {
 	// +optional
 	Forwarder AddressSet `json:"forwarder,omitzero"`
 
-	// scope holds the addresses of the pods selected by scopeSelector. They
-	// are what the gateway lets decrypted traffic through to.
+	// scope holds the addresses of the pods selected by scopeSelector, and the
+	// cluster IP of each Service of the namespace. They are what the gateway lets
+	// decrypted traffic through to, so an address that is not the tenant's to
+	// reach must not be here. A connector leaves out the pods that are being
+	// deleted, because their address goes back to the pool and may be given to a
+	// pod of another namespace, the pods that have finished, the pods on the host
+	// network, whose address is that of a node, and every gateway.
 	//
 	// +optional
 	Scope AddressSet `json:"scope,omitzero"`

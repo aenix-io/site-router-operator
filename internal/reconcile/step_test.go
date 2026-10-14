@@ -19,6 +19,7 @@ package reconcile_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -68,7 +69,9 @@ type harness struct {
 	connectErr    error
 	confirmReport *engine.GuardReport // when set, Confirm returns it instead of asking the guest
 	routesErr     error
+	routeState    *reconcile.RouteState // when set, Grant returns it instead of "programmed"
 	withdrawErr   error
+	granted       [][]string // the CIDRs of each Grant
 }
 
 type spy struct {
@@ -111,19 +114,27 @@ func (x spySession) Observe(ctx context.Context) (engine.Observed, error) {
 	return x.Session.Observe(ctx)
 }
 
-type fwd struct{ h *harness }
+// routes is the network seam of the harness.
+type routes struct{ h *harness }
 
-func (f fwd) ApplyRoutes(context.Context, string, []string, string) error {
-	f.h.log = append(f.h.log, "routes")
-	return f.h.routesErr
+func (r routes) Grant(_ context.Context, cidrs []string) (reconcile.RouteState, error) {
+	r.h.log = append(r.h.log, "routes")
+	r.h.granted = append(r.h.granted, slices.Clone(cidrs))
+	if r.h.routesErr != nil {
+		return reconcile.RouteState{}, r.h.routesErr
+	}
+	if r.h.routeState != nil {
+		return *r.h.routeState, nil
+	}
+	return reconcile.RouteState{Programmed: true}, nil
 }
 
-func (f fwd) WithdrawRoutes(context.Context, string) error {
-	f.h.log = append(f.h.log, "withdraw")
-	return f.h.withdrawErr
+func (r routes) Withdraw(context.Context) error {
+	r.h.log = append(r.h.log, "withdraw")
+	return r.h.withdrawErr
 }
 
-func rejectDefaultRoute(in reconcile.Instance) error {
+func rejectDefaultRoute(_ context.Context, in reconcile.Instance) error {
 	for _, c := range in.RemoteCIDRs {
 		if strings.HasSuffix(c, "/0") {
 			return errors.New("remote CIDR " + c + " is a default route")
@@ -135,13 +146,13 @@ func rejectDefaultRoute(in reconcile.Instance) error {
 func newHarness(t *testing.T, e engine.Engine) *harness {
 	t.Helper()
 	h := &harness{}
-	validate := func(in reconcile.Instance) error {
+	validate := func(ctx context.Context, in reconcile.Instance) error {
 		if h.validateErr != nil {
 			return h.validateErr
 		}
-		return rejectDefaultRoute(in)
+		return rejectDefaultRoute(ctx, in)
 	}
-	s, err := reconcile.New(spy{e, h}, fwd{h}, validate)
+	s, err := reconcile.New(spy{e, h}, validate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,6 +161,9 @@ func newHarness(t *testing.T, e engine.Engine) *harness {
 }
 
 func (h *harness) step(in reconcile.Instance, st *reconcile.State) reconcile.Result {
+	if in.Routes == nil {
+		in.Routes = routes{h}
+	}
 	return h.stepper.Step(context.Background(), endpoint, in, st)
 }
 
@@ -162,7 +176,6 @@ func (h *harness) takeLog() []string {
 func instance(dests ...string) reconcile.Instance {
 	return reconcile.Instance{
 		Name:        "a",
-		GatewayIP:   "10.244.1.9",
 		RemoteCIDRs: []string{remoteCIDR},
 		Desired: engine.Desired{
 			Tunnels: []engine.Tunnel{{ID: "t1", PeerAddress: "203.0.113.10", PSK: psk, LocalID: "198.51.100.1", RemoteSelectors: []string{remoteCIDR}}},
@@ -330,6 +343,45 @@ func TestInvalidInstanceNeverReachesEngine(t *testing.T) {
 	}
 }
 
+// A validator that cannot look is not a validator that refuses. Withdrawing the
+// routes of a tenant because the API of the cluster did not answer would turn a
+// hiccup into an outage, so the pass stops and leaves everything as it is.
+func TestAValidatorThatCannotJudgeLeavesTheRoutesAlone(t *testing.T) {
+	cause := errors.New("listing the nodes: Get https://10.0.0.1:6443/api/v1/nodes: connection refused with " + psk)
+	for _, r := range rigs() {
+		t.Run(r.name, func(t *testing.T) {
+			h := newHarness(t, r.eng)
+			h.validateErr = fmt.Errorf("%w: %w", reconcile.ErrValidationUnavailable, cause)
+			st := &reconcile.State{Revision: "kept"}
+			res := h.step(instance("10.244.1.5/32"), st)
+
+			if len(h.log) != 0 {
+				t.Errorf("calls = %v: nothing should reach the engine or the network", h.log)
+			}
+			if st.Revision != "kept" {
+				t.Errorf("the revision became %q: the engine was not contacted, so it must stay", st.Revision)
+			}
+			c := res.Conditions[reconcile.CondValidated]
+			if c.OK || c.Reason != reconcile.ReasonValidationUnavailable {
+				t.Errorf("Validated = %+v, want False and ValidationUnavailable", c)
+			}
+			if _, set := res.Conditions[reconcile.CondRoutesProgrammed]; set {
+				t.Error("RoutesProgrammed was set although the routes were not touched")
+			}
+			// The cause is for the log and the condition is for a tenant.
+			if strings.Contains(c.Message, "10.0.0.1") || strings.Contains(c.Message, "connection refused") {
+				t.Errorf("the condition carries the cause: %q", c.Message)
+			}
+			if res.Err == nil || !strings.Contains(res.Err.Error(), "connection refused") {
+				t.Errorf("Err = %v, want the cause, for the log", res.Err)
+			}
+			if res.Err != nil && strings.Contains(res.Err.Error(), psk) {
+				t.Errorf("Err leaks a secret: %v", res.Err)
+			}
+		})
+	}
+}
+
 func TestWithdrawFailureIsReported(t *testing.T) {
 	h := newHarness(t, rigs()[0].eng)
 	h.withdrawErr = errors.New("connector is down")
@@ -385,18 +437,83 @@ func TestNewRequiresEveryDependency(t *testing.T) {
 	for _, tc := range []struct {
 		missing  string
 		eng      engine.Engine
-		fwd      reconcile.Forwarder
 		validate reconcile.Validator
 	}{
-		{"engine", nil, fwd{h}, rejectDefaultRoute},
-		{"forwarder", eng, nil, rejectDefaultRoute},
-		{"validator", eng, fwd{h}, nil},
+		{"engine", nil, rejectDefaultRoute},
+		{"validator", eng, nil},
 	} {
-		if _, err := reconcile.New(tc.eng, tc.fwd, tc.validate); err == nil {
+		if _, err := reconcile.New(tc.eng, tc.validate); err == nil {
 			t.Errorf("New accepted a missing %s", tc.missing)
 		}
 	}
-	if _, err := reconcile.New(eng, fwd{h}, rejectDefaultRoute); err != nil {
+	if _, err := reconcile.New(eng, rejectDefaultRoute); err != nil {
 		t.Errorf("New refused complete dependencies: %v", err)
+	}
+}
+
+// The network says how the routes stand, and Step shows that as it is said,
+// without a secret in it.
+func TestRoutesProgrammedShowsWhatTheNetworkSays(t *testing.T) {
+	cases := []struct {
+		name       string
+		state      reconcile.RouteState
+		wantOK     bool
+		wantReason string
+	}{
+		{"programmed, with no reason given", reconcile.RouteState{Programmed: true}, true, reconcile.ReasonProgrammed},
+		{"programmed, with a reason", reconcile.RouteState{Programmed: true, Reason: "Elsewhere"}, true, "Elsewhere"},
+		{"not yet, with no reason given", reconcile.RouteState{}, false, reconcile.ReasonRoutesPending},
+		{"not yet, with a reason", reconcile.RouteState{Reason: "PendingWorkloads", Message: "2 workloads need a restart"}, false, "PendingWorkloads"},
+	}
+	for _, c := range cases {
+		for _, r := range rigs() {
+			t.Run(c.name+"/"+r.name, func(t *testing.T) {
+				h := newHarness(t, r.eng)
+				h.routeState = &c.state
+				res := h.step(instance("10.244.1.5/32"), &reconcile.State{})
+				got := res.Conditions[reconcile.CondRoutesProgrammed]
+				if got.OK != c.wantOK || got.Reason != c.wantReason || got.Message != c.state.Message {
+					t.Errorf("RoutesProgrammed = %+v, want OK=%v reason=%q message=%q", got, c.wantOK, c.wantReason, c.state.Message)
+				}
+				// The tunnel is observed whether or not the routes are in.
+				if _, ok := res.Conditions[reconcile.CondTunnelEstablished]; !ok {
+					t.Error("the pass stopped before it observed the tunnel")
+				}
+				if !slices.Equal(h.takeLog(), []string{"connect", "apply", "confirm", "routes", "observe"}) {
+					t.Error("calls out of order")
+				}
+			})
+		}
+	}
+}
+
+func TestTheMessageOfTheNetworkIsRedacted(t *testing.T) {
+	h := newHarness(t, rigs()[0].eng)
+	h.routeState = &reconcile.RouteState{Reason: "RoutesPending", Message: "waiting for " + psk}
+	res := h.step(instance("10.244.1.5/32"), &reconcile.State{})
+	if msg := res.Conditions[reconcile.CondRoutesProgrammed].Message; strings.Contains(msg, psk) || !strings.Contains(msg, "***") {
+		t.Errorf("message = %q, want the secret redacted", msg)
+	}
+}
+
+func TestTheRemoteNetworksAreWhatIsGranted(t *testing.T) {
+	h := newHarness(t, rigs()[0].eng)
+	in := instance("10.244.1.5/32")
+	in.RemoteCIDRs = []string{"192.0.2.0/24", "198.51.100.0/24"}
+	h.step(in, &reconcile.State{})
+	if len(h.granted) != 1 || !slices.Equal(h.granted[0], in.RemoteCIDRs) {
+		t.Errorf("granted = %v, want the remote networks of the instance", h.granted)
+	}
+}
+
+func TestAnInstanceWithNoRoutesCannotBePassed(t *testing.T) {
+	h := newHarness(t, rigs()[0].eng)
+	// The harness fills in Routes, so the stepper is called directly.
+	res := h.stepper.Step(context.Background(), endpoint, instance("10.244.1.5/32"), &reconcile.State{})
+	if len(h.log) != 0 {
+		t.Errorf("calls = %v: nothing should reach the engine", h.log)
+	}
+	if res.Err == nil || res.Conditions[reconcile.CondRoutesProgrammed].OK {
+		t.Errorf("result = %+v, want an error and no routes programmed", res)
 	}
 }

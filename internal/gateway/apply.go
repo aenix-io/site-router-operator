@@ -116,19 +116,20 @@ func (a *Applier) apply(ctx context.Context, sr *v1alpha1.SiteRouter, o client.O
 			}
 		}
 	}
-	ac, err := applyConfiguration(o)
+	ac, err := ApplyConfiguration(o)
 	if err != nil {
 		return err
 	}
 	return a.Client.Apply(ctx, ac, client.FieldOwner(FieldOwner), client.ForceOwnership)
 }
 
-// applyConfiguration is what is applied for an object: only what the operator
+// ApplyConfiguration is what is applied for an object: only what the operator
 // sets. An object of a Go type is turned into its unstructured form, which is
-// safe here because Render sets no field to a value that is also its zero
-// value, and has no status and no timestamp, which the conversion would add as
-// empty.
-func applyConfiguration(o client.Object) (runtime.ApplyConfiguration, error) {
+// safe for the objects of the operator because none of them sets a field to a
+// value that is also its zero value, and none has a status or a timestamp,
+// which the conversion would add as empty. A new kind of object has to keep to
+// that, or be built unstructured.
+func ApplyConfiguration(o client.Object) (runtime.ApplyConfiguration, error) {
 	u, ok := o.(*unstructured.Unstructured)
 	if !ok {
 		m, err := runtime.DefaultUnstructuredConverter.ToUnstructured(o)

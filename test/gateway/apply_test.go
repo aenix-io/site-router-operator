@@ -23,59 +23,25 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/aenix-io/site-router-operator/api/engine"
 	"github.com/aenix-io/site-router-operator/api/v1alpha1"
 	"github.com/aenix-io/site-router-operator/internal/gateway"
+	"github.com/aenix-io/site-router-operator/internal/testenv"
 )
 
 var k8sClient client.Client
 
 func TestMain(m *testing.M) {
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		fmt.Fprintln(os.Stderr, "KUBEBUILDER_ASSETS is not set: run these tests with `make test`")
-		os.Exit(1)
-	}
-	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, v1alpha1.AddToScheme} {
-		if err := add(scheme); err != nil {
-			fmt.Fprintln(os.Stderr, "building the scheme:", err)
-			os.Exit(1)
-		}
-	}
-	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases"), "crds"},
-		ErrorIfCRDPathMissing: true,
-	}
-	cfg, err := env.Start()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "starting envtest:", err)
-		os.Exit(1)
-	}
-	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "creating a client:", err)
-		_ = env.Stop()
-		os.Exit(1)
-	}
-	code := m.Run()
-	if err := env.Stop(); err != nil {
-		fmt.Fprintln(os.Stderr, "stopping envtest:", err)
-	}
-	os.Exit(code)
+	testenv.Main(m, func(c client.Client) { k8sClient = c }, "crds")
 }
 
 const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

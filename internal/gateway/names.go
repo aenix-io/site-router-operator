@@ -30,6 +30,9 @@ type Names struct {
 	Tunnel     string
 	EgressDeny string
 	Ingress    string
+	// Forwarder is the name of the Forwarder, which is not part of what Render
+	// makes: its addresses come from the network, so it is made once the VM is.
+	Forwarder string
 }
 
 const namePrefix = "site-router-"
@@ -46,5 +49,6 @@ func NamesFor(instance string) Names {
 		Tunnel:     vm + "-tunnel",
 		EgressDeny: vm + "-gateway-egress-deny",
 		Ingress:    vm + "-gateway-ingress",
+		Forwarder:  vm,
 	}
 }

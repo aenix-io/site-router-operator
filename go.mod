@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/aenix-io/site-router-operator/api v0.0.0-00010101000000-000000000000
+	golang.org/x/sync v0.22.0
 	k8s.io/api v0.37.0
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.0
@@ -74,7 +75,6 @@ require (
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
