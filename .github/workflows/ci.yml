@@ -148,6 +148,9 @@ jobs:
       - name: Build the image
         run: make docker-build IMG=site-router-operator:ci
 
+      - name: Build the image of the connector for kube-ovn
+        run: make -C connectors/kube-ovn docker-build IMG=site-router-kube-ovn-connector:ci
+
   commits:
     if: github.event_name == 'pull_request'
     permissions:

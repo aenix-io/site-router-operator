@@ -1,0 +1,16 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kube-ovn-connector-leader-election
+  namespace: site-router-kube-ovn-connector
+  labels:
+    app.kubernetes.io/name: kube-ovn-connector
+    app.kubernetes.io/part-of: site-router-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kube-ovn-connector-leader-election
+subjects:
+- kind: ServiceAccount
+  name: kube-ovn-connector
+  namespace: site-router-kube-ovn-connector

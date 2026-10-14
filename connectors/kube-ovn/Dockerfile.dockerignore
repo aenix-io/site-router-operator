@@ -1,0 +1,10 @@
+# What of the root of the repository the build of the connector sees: the
+# sources and module files of the api module and of the connector, no tests.
+**
+!api/**/*.go
+!api/go.mod
+!api/go.sum
+!connectors/kube-ovn/**/*.go
+!connectors/kube-ovn/go.mod
+!connectors/kube-ovn/go.sum
+**/*_test.go

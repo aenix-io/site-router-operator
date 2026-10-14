@@ -1,0 +1,44 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-ovn-connector
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  - pods
+  verbs:
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - kubevirt.io
+  resources:
+  - virtualmachineinstances
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - siterouter.aenix.io
+  resources:
+  - forwarders
+  verbs:
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - siterouter.aenix.io
+  resources:
+  - forwarders/finalizers
+  - forwarders/status
+  verbs:
+  - update

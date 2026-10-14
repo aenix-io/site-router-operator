@@ -4,8 +4,11 @@ IMG ?= ghcr.io/aenix-io/site-router-operator:latest
 # instead of taken from the clock: a moving year would change every generated file
 # each January and fail the generated-files check on unrelated pull requests.
 YEAR ?= 2026
-# The repository holds two Go modules: the operator (.) and its public API (api).
-MODULES := . api
+# The repository holds three Go modules: the operator (.), its public API (api)
+# and the connector for kube-ovn (connectors/kube-ovn), which has a Makefile of
+# its own that the targets below call for what is its alone.
+MODULES := . api connectors/kube-ovn
+CONNECTORS := connectors/kube-ovn
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -49,8 +52,12 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate ClusterRole and CustomResourceDefinition objects.
-	"$(CONTROLLER_GEN)" rbac:roleName=manager-role paths="./..."
+	# The role of the operator is made of the operator's packages alone:
+	# controller-gen goes into nested modules, and a connector's markers would
+	# give the operator what the connector may do.
+	"$(CONTROLLER_GEN)" rbac:roleName=manager-role paths="./cmd/...;./internal/..."
 	cd api && "$(CONTROLLER_GEN)" crd paths="./..." output:crd:artifacts:config=../config/crd/bases
+	for c in $(CONNECTORS); do $(MAKE) -C $$c manifests CONTROLLER_GEN="$(CONTROLLER_GEN)" || exit 1; done
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -93,6 +100,7 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test -race ./... -coverprofile cover.out
 	cd api && go test -race ./...
+	for c in $(CONNECTORS); do $(MAKE) -C $$c test LOCALBIN="$(LOCALBIN)" CONTROLLER_GEN="$(CONTROLLER_GEN)" ENVTEST="$(ENVTEST)" || exit 1; done
 
 # What the apiserver makes of the CRDs and of the objects of a gateway is tested
 # on more than one Kubernetes version: the CEL library for CIDRs first shipped in
@@ -101,10 +109,13 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 CRD_K8S_VERSIONS ?= 1.31 1.34 $(ENVTEST_K8S_VERSION)
 
 .PHONY: test-crd
-test-crd: manifests setup-envtest ## Run the tests against a real apiserver (CRD schema, applying a gateway, the Forwarder) on every Kubernetes version in CRD_K8S_VERSIONS.
+test-crd: manifests setup-envtest ## Run the tests against a real apiserver (CRD schema, applying a gateway, the Forwarder, the connectors) on every Kubernetes version in CRD_K8S_VERSIONS.
 	for v in $(CRD_K8S_VERSIONS); do \
 		echo "== Kubernetes $$v"; \
 		KUBEBUILDER_ASSETS="$$("$(ENVTEST)" use $$v --bin-dir "$(LOCALBIN)" -p path)" go test -count=1 ./test/crd/ ./test/gateway/ ./test/forwarder/ ./test/controller/ || exit 1; \
+		for c in $(CONNECTORS); do \
+			KUBEBUILDER_ASSETS="$$("$(ENVTEST)" use $$v --bin-dir "$(LOCALBIN)" -p path)" go -C $$c test -count=1 ./test/... || exit 1; \
+		done; \
 	done
 
 .PHONY: lint
