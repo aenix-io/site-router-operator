@@ -146,11 +146,11 @@ func set(r *Result, typ string, ok bool, reason, msg string) {
 	r.Conditions[typ] = Condition{OK: ok, Reason: reason, Message: msg}
 }
 
-// redact removes every known secret from text that came back from an engine,
+// Redact removes every known secret from text that came back from an engine,
 // the network or the validator. It runs on every such call: none of them can be
 // trusted to keep secrets out of its errors. Longer secrets go first, so one
 // that contains another is not left half exposed.
-func redact(text string, secrets []string) string {
+func Redact(text string, secrets []string) string {
 	byLength := slices.SortedFunc(slices.Values(secrets), func(a, b string) int { return cmp.Compare(len(b), len(a)) })
 	for _, s := range byLength {
 		if s != "" {
@@ -158,6 +158,56 @@ func redact(text string, secrets []string) string {
 		}
 	}
 	return text
+}
+
+// Judge runs the first stage of a pass and no other: whether the instance may be
+// configured at all. A gateway that is not up yet has nothing to configure, and
+// a tenant whose networks are refused is told so at once, not when the VM has
+// booted. It sets the Validated condition, and takes the routes away when the
+// instance is refused, as Step does.
+func (s *Stepper) Judge(ctx context.Context, in Instance) Result {
+	res := Result{Conditions: map[string]Condition{}}
+	secrets := in.Desired.Secrets()
+	s.judge(ctx, in, &res, func(err error) string { return Redact(err.Error(), secrets) })
+	return res
+}
+
+// Unavailable is the result of a pass that could not judge the instance, because
+// what it is judged against could not be learned. The routes are left as they
+// are, as for a validator that wraps ErrValidationUnavailable, and nothing
+// reaches the engine. cause is for the log: it can name the API server or what it
+// failed on, which is not for a tenant, so the condition does not carry it.
+func Unavailable(cause error) Result {
+	res := Result{Conditions: map[string]Condition{}, Err: cause}
+	set(&res, CondValidated, false, ReasonValidationUnavailable, "the networks of the cluster could not be checked now; trying again")
+	return res
+}
+
+// judge runs the validation stage into res, and says whether the pass goes on.
+func (s *Stepper) judge(ctx context.Context, in Instance, res *Result, safe func(error) string) bool {
+	if in.Routes == nil {
+		// A fault of the caller, not of the tenant, so it is for the log; but
+		// nothing can be said to be programmed either.
+		res.Err = errors.New("reconcile: the instance has no Routes")
+		set(res, CondRoutesProgrammed, false, ReasonRoutesFailed, "no network is set up to carry routes for this instance")
+		return false
+	}
+	err := s.validate(ctx, in)
+	switch {
+	case err == nil:
+		set(res, CondValidated, true, ReasonAccepted, "")
+		return true
+	case errors.Is(err, ErrValidationUnavailable):
+		u := Unavailable(errors.New(safe(err)))
+		res.Err = u.Err
+		res.Conditions[CondValidated] = u.Conditions[CondValidated]
+		return false
+	}
+	set(res, CondValidated, false, ReasonInvalidRemoteCIDR, safe(err))
+	if werr := in.Routes.Withdraw(ctx); werr != nil {
+		set(res, CondRoutesProgrammed, false, ReasonRoutesFailed, "withdrawing routes: "+safe(werr))
+	}
+	return false
 }
 
 // Step runs one pass in the order the design needs:
@@ -174,15 +224,11 @@ func redact(text string, secrets []string) string {
 // the tenant's traffic.
 func (s *Stepper) Step(ctx context.Context, ep engine.Endpoint, in Instance, st *State) Result {
 	res := Result{Conditions: map[string]Condition{}}
-	if in.Routes == nil {
-		// A fault of the caller, not of the tenant, so it is for the log; but
-		// nothing can be said to be programmed either.
-		res.Err = errors.New("reconcile: the instance has no Routes")
-		set(&res, CondRoutesProgrammed, false, ReasonRoutesFailed, "no network is set up to carry routes for this instance")
+	secrets := append(in.Desired.Secrets(), ep.Secrets()...)
+	safe := func(err error) string { return Redact(err.Error(), secrets) }
+	if !s.judge(ctx, in, &res, safe) {
 		return res
 	}
-	secrets := append(in.Desired.Secrets(), ep.Secrets()...)
-	safe := func(err error) string { return redact(err.Error(), secrets) }
 	// withdraw takes the routes away and records a failure to do so.
 	withdraw := func() bool {
 		if werr := in.Routes.Withdraw(ctx); werr != nil {
@@ -191,20 +237,6 @@ func (s *Stepper) Step(ctx context.Context, ep engine.Endpoint, in Instance, st 
 		}
 		return true
 	}
-
-	if err := s.validate(ctx, in); err != nil {
-		if errors.Is(err, ErrValidationUnavailable) {
-			// The text of the cause is for the log, not for a tenant: it can
-			// name the API server or what it failed on.
-			res.Err = errors.New(safe(err))
-			set(&res, CondValidated, false, ReasonValidationUnavailable, "the networks of the cluster could not be checked now; trying again")
-			return res
-		}
-		set(&res, CondValidated, false, ReasonInvalidRemoteCIDR, safe(err))
-		_ = withdraw()
-		return res
-	}
-	set(&res, CondValidated, true, ReasonAccepted, "")
 
 	sess, err := s.engine.Connect(ep)
 	if err != nil {
@@ -222,7 +254,7 @@ func (s *Stepper) Step(ctx context.Context, ep engine.Endpoint, in Instance, st 
 	rep, err := sess.Confirm(ctx)
 	if err != nil || rep.TunnelIngress != engine.GuardActive {
 		st.Revision = ""
-		msg := redact(rep.Detail, secrets)
+		msg := Redact(rep.Detail, secrets)
 		if err != nil {
 			msg = safe(err)
 		}
@@ -249,7 +281,7 @@ func (s *Stepper) Step(ctx context.Context, ep engine.Endpoint, in Instance, st 
 			reason = ReasonProgrammed
 		}
 	}
-	set(&res, CondRoutesProgrammed, state.Programmed, reason, redact(state.Message, secrets))
+	set(&res, CondRoutesProgrammed, state.Programmed, reason, Redact(state.Message, secrets))
 
 	obs, err := sess.Observe(ctx)
 	if err != nil {

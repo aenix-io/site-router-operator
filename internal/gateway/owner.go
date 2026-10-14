@@ -31,6 +31,16 @@ func Labels(instance string) map[string]string {
 	}
 }
 
+// DiskLabels are the labels of the boot disk, which carries LabelBootDiskOf in
+// place of the instance label (see the comment of v1alpha1.LabelBootDiskOf for
+// why).
+func DiskLabels(instance string) map[string]string {
+	return map[string]string{
+		v1alpha1.LabelManagedBy:  v1alpha1.ManagedByValue,
+		v1alpha1.LabelBootDiskOf: instance,
+	}
+}
+
 // OwnerReference makes the SiteRouter the controller of an object, so that the
 // object goes with it.
 func OwnerReference(sr *v1alpha1.SiteRouter) metav1.OwnerReference {

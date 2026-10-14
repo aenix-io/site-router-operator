@@ -41,6 +41,21 @@ const (
 	ReasonTunnelAddressPending = "TunnelAddressPending"
 	ReasonPSKSecretPending     = "PSKSecretPending"
 	ReasonUpgrading            = "Upgrading"
+	// ReasonUpgradeFailed: the disk of the other image could not be made ready,
+	// and the gateway is still on the one it had.
+	ReasonUpgradeFailed = "UpgradeFailed"
+	// ReasonObjectConflict: an object of the name of one of the gateway exists and
+	// is not the operator's.
+	ReasonObjectConflict = "ObjectConflict"
+	// ReasonLoadBalancerClassChanged: the class of the load balancer of the tunnel
+	// cannot be changed on a Service that exists.
+	ReasonLoadBalancerClassChanged = "LoadBalancerClassChanged"
+	// ReasonGatewayIsolationUnavailable: the platform has the gateway run with no
+	// isolation and does not say so on purpose.
+	ReasonGatewayIsolationUnavailable = "GatewayIsolationUnavailable"
+	// ReasonReconcileFailed is for a failure that has no reason of its own, so that
+	// none goes unsaid.
+	ReasonReconcileFailed = "ReconcileFailed"
 
 	// Configured.
 	ReasonConfigureFailed          = "ConfigureFailed"

@@ -18,15 +18,39 @@ package v1alpha1
 
 // Labels the operator puts on what it creates.
 const (
-	// LabelInstance is set on every object the operator creates for a SiteRouter
-	// and on the pod template of its gateway VM, with the name of the SiteRouter
-	// as the value. It is how the pods of a gateway are found, by the Service in
-	// front of them, by the network policies and by a Forwarder.
+	// LabelInstance is set on every object the operator creates for a SiteRouter,
+	// except its boot disk, and on the pod template of its gateway VM, with the name
+	// of the SiteRouter as the value. It is how the pods of a gateway are found, by
+	// the Service in front of them, by the network policies and by a Forwarder.
 	LabelInstance = "siterouter.aenix.io/instance"
+
+	// LabelBootDiskOf is set on the boot disk of a gateway, with the name of the
+	// SiteRouter as the value, where every other object carries LabelInstance. CDI
+	// copies the labels of a DataVolume to the pod that imports it, and a pod that
+	// carries LabelInstance is taken for the gateway: the network policies, which
+	// close its egress, the Service and a Forwarder select by it. The pod that
+	// imports the image of the gateway is none of those.
+	LabelBootDiskOf = "siterouter.aenix.io/boot-disk-of"
 
 	// LabelManagedBy is the standard label that names the manager of an object.
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 
 	// ManagedByValue is the value of LabelManagedBy on what the operator creates.
 	ManagedByValue = "site-router-operator"
+)
+
+// Annotations that tell the operator what to do with a SiteRouter.
+const (
+	// AnnotationUpgradeTo names the version of the image the gateway of the
+	// SiteRouter is to run. It moves the gateway to that version, up or down, and
+	// keeps it there; in either upgrade policy it comes before the policy. A
+	// version that is not listed by the operator is not run, and the gateway
+	// stays as it is.
+	AnnotationUpgradeTo = "siterouter.aenix.io/upgrade-to"
+
+	// AnnotationImageDigest is set by the operator on the boot disk and on the
+	// seed of a gateway, with the digest of the image they were made for. They are
+	// named after the first characters of it, and the whole is what says that an
+	// object of that name is the one that is meant.
+	AnnotationImageDigest = "siterouter.aenix.io/image-digest"
 )

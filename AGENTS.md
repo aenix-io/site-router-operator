@@ -18,14 +18,16 @@ The operator is not tied to Cozystack, to a particular appliance or to a particu
 - Materialization is a pure function from spec, operator config, the engine's bootstrap plan and the `Forwarder` status to Kubernetes objects. It never reads the cluster. Applying is separate (create-if-absent for credentials, owner references on everything). `assertInvariants` rejects objects that break the guarantees below.
 - Invariants of the gateway objects: the pod template carries the discovery label; the default interface is a bridge on the pod network; the boot volume is the planned DataVolume and the seed volume is the planned Secret; the tunnel Service keeps `externalTrafficPolicy: Local`; the pod template has no `port_security` annotation (the connector grants it); `loadBalancerClass` is not changed after creation.
 - Reconcile order: validate, connect, apply, confirm, grant and routes, observe. Routes are programmed only after the engine confirms the source filter.
-- Secrets never reach logs, events, conditions or status. Redact on every engine call, not only on apply.
+- Secrets never reach logs, events, conditions or status. Redact on every engine call, not only on apply, and on every error that can carry what the operator was given or made (`reconcile.Redact`).
+- Whether an object is the operator's is decided on what the apiserver shows, not on the manager cache: the cache holds only objects with the operator's label, so it does not show one that someone else made under the name of an object of the gateway, and an object that is not shown is applied over. The management credentials go only to the address of an instance that the gateway's own VM controls by UID.
+- Moving a gateway to another image is read from the objects in the cluster at every pass and never remembered; the status marks it (reason `Upgrading`), and the places of the moves are restored from it when the operator starts.
 - No validating webhook in v0.1. Status lives in `status.conditions` on the CR.
 
 ## Layout and commands
 
 - Two Go modules: the operator (`.`) and its public API (`api/`, import path `github.com/aenix-io/site-router-operator/api`). The root `go.mod` replaces `api` with `./api`. Run Go commands for the API from `api/`. The API group is `siterouter.aenix.io`.
 - `make manifests generate` regenerates CRDs, RBAC and deepcopy code. `make check-generated` fails when they, or `go.mod` and `go.sum`, are stale; run it in a tree with no uncommitted changes.
-- `make test` runs unit and envtest tests with `-race` in both modules. `make test-crd` runs the CRD schema tests, the tests that apply a gateway and those of the Forwarder on Kubernetes 1.31, 1.34 and the newest supported version; the CEL rules are tested on a real apiserver, because older apiservers estimate their cost differently and can refuse a CRD that a newer one accepts. `make lint` runs golangci-lint in both.
+- `make test` runs unit and envtest tests with `-race` in both modules. `make test-crd` runs the CRD schema tests, the tests that apply a gateway, those of the Forwarder and those of the controller on Kubernetes 1.31, 1.34 and the newest supported version; the CEL rules are tested on a real apiserver, because older apiservers estimate their cost differently and can refuse a CRD that a newer one accepts. `make lint` runs golangci-lint in both.
 - `make check-commits` checks commit messages against the rules below. CI runs the same `hack/check-commits.sh` on every pull request.
 
 ## Conventions

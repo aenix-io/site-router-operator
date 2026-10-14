@@ -23,6 +23,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -88,6 +89,10 @@ func mustCreateUnstructured(t *testing.T, gvk schema.GroupVersionKind, ns, name 
 	u.SetName(name)
 	mustCreate(t, u)
 }
+
+// names are the names of the objects of the gateway for the image of the default
+// input.
+func (w *world) names() gateway.Names { return gateway.NamesFor(w.sr.Name).ForImage(w.input().Image) }
 
 func (w *world) input(mutate ...func(*gateway.Input)) gateway.Input {
 	cfg := gateway.DefaultConfig()
@@ -186,7 +191,7 @@ func secretValue(t *testing.T, s *unstructured.Unstructured, key string) string 
 
 func TestApplyMakesTheWholeGateway(t *testing.T) {
 	w := newWorld(t)
-	names := gateway.NamesFor(w.sr.Name)
+	names := w.names()
 	w.mustApply(w.input())
 
 	for name, o := range map[string]*unstructured.Unstructured{
@@ -210,7 +215,7 @@ func TestApplyMakesTheWholeGateway(t *testing.T) {
 
 func TestApplyingTwiceChangesNothing(t *testing.T) {
 	w := newWorld(t)
-	names := gateway.NamesFor(w.sr.Name)
+	names := w.names()
 	versions := func() map[string]string {
 		out := map[string]string{}
 		for _, o := range []*unstructured.Unstructured{
@@ -237,7 +242,7 @@ func TestApplyingTwiceChangesNothing(t *testing.T) {
 
 func TestSecretsAreNeverWrittenAgain(t *testing.T) {
 	w := newWorld(t)
-	names := gateway.NamesFor(w.sr.Name)
+	names := w.names()
 	w.mustApply(w.input())
 
 	// What a later pass would generate anew: other credentials, another seed
@@ -259,26 +264,82 @@ func TestSecretsAreNeverWrittenAgain(t *testing.T) {
 	}
 }
 
-func TestBootDiskIsNeverChanged(t *testing.T) {
+// Another image is another disk and another seed, beside the old ones, and the
+// old ones are never changed: a disk cannot be, and a seed that a gateway
+// booted from is not rewritten under it.
+func TestAnotherImageGetsAnotherDiskBesideTheOne(t *testing.T) {
 	w := newWorld(t)
-	names := gateway.NamesFor(w.sr.Name)
+	names := w.names()
 	w.mustApply(w.input())
-	before := nested[map[string]any](t, w.dataVolume(names.BootDisk), "spec")
+	diskBefore := nested[map[string]any](t, w.dataVolume(names.BootDisk), "spec")
 
-	w.mustApply(w.input(func(in *gateway.Input) {
+	other := func(in *gateway.Input) {
 		in.Image = "registry.example/appliances/gateway-disk:2.0@sha256:f123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 		in.Plan.DiskGiB = 20
-	}))
+		in.Plan.SeedFiles = map[string][]byte{engine.SeedUserData: []byte("# seed for the other image")}
+	}
+	moved := gateway.NamesFor(w.sr.Name).ForImage(w.input(other).Image)
+	w.mustApply(w.input(other))
 
-	after := nested[map[string]any](t, w.dataVolume(names.BootDisk), "spec")
-	if fmt.Sprint(before) != fmt.Sprint(after) {
-		t.Errorf("the spec of the boot disk changed, and CDI does not allow that:\nbefore %v\nafter  %v", before, after)
+	if got := nested[map[string]any](t, w.dataVolume(names.BootDisk), "spec"); fmt.Sprint(got) != fmt.Sprint(diskBefore) {
+		t.Errorf("the disk of the first image changed, and CDI does not allow that:\nbefore %v\nafter  %v", diskBefore, got)
+	}
+	if got := secretValue(t, w.secret(names.CloudInit), engine.SeedUserData); got != "# seed one" {
+		t.Errorf("the seed of the first image became %q", got)
+	}
+	if w.dataVolume(moved.BootDisk) == nil {
+		t.Fatalf("no disk for the other image, %s", moved.BootDisk)
+	}
+	if got := nested[string](t, w.dataVolume(moved.BootDisk), "spec", "storage", "resources", "requests", "storage"); got != "20Gi" {
+		t.Errorf("the new disk asks for %q, want 20Gi", got)
+	}
+	if got := secretValue(t, w.secret(moved.CloudInit), engine.SeedUserData); got != "# seed for the other image" {
+		t.Errorf("the seed of the other image = %q", got)
+	}
+	// And the VM follows, since it is applied.
+	vm := w.vm(names.VM)
+	volumes := nested[[]any](t, vm, "spec", "template", "spec", "volumes")
+	if len(volumes) != 2 || nested[string](t, &unstructured.Unstructured{Object: volumes[0].(map[string]any)}, "dataVolume", "name") != moved.BootDisk {
+		t.Errorf("the VM does not boot from the new disk: %v", volumes)
+	}
+}
+
+// Two images can share the first four characters of their digest, and a gateway
+// must not boot from the disk of the other.
+func TestADiskOfTheNameThatWasMadeForAnotherImageIsNotTaken(t *testing.T) {
+	w := newWorld(t)
+	names := w.names()
+	w.mustApply(w.input())
+	before := w.dataVolume(names.BootDisk).GetResourceVersion()
+
+	// Same first four characters of the digest, another digest.
+	clash := func(in *gateway.Input) {
+		in.Image = "registry.example/appliances/gateway-disk:3.0@sha256:0123" + strings.Repeat("f", 60)
+	}
+	if gateway.NamesFor(w.sr.Name).ForImage(w.input(clash).Image).BootDisk != names.BootDisk {
+		t.Fatal("the images do not clash: the test is wrong")
+	}
+	err := w.apply(w.input(clash))
+	var mismatch *gateway.ImageMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("error = %v, want an ImageMismatchError", err)
+	}
+	// The seed comes before the disk in the order of creation, so it is the one
+	// that is refused first, and the pass stops there.
+	if mismatch.Name != names.CloudInit || !strings.Contains(mismatch.Existing, digest) {
+		t.Errorf("the error says %+v", mismatch)
+	}
+	if after := w.dataVolume(names.BootDisk).GetResourceVersion(); after != before {
+		t.Error("the disk was written")
+	}
+	if w.vm(names.VM) != nil && nested[int64](t, w.vm(names.VM), "spec", "template", "spec", "domain", "cpu", "cores") != 2 {
+		t.Error("the VM was changed by a pass that stopped before it")
 	}
 }
 
 func TestVirtualMachineFollowsTheInputAndDropsWhatIsNoLongerAskedFor(t *testing.T) {
 	w := newWorld(t)
-	names := gateway.NamesFor(w.sr.Name)
+	names := w.names()
 	w.mustApply(w.input(func(in *gateway.Input) {
 		in.Config.VM.NodeSelector = map[string]string{"placement.example/pool": "gateways"}
 		in.Config.VM.PodLabels = map[string]string{"billing.example/class": "network"}
@@ -306,7 +367,7 @@ func TestVirtualMachineFollowsTheInputAndDropsWhatIsNoLongerAskedFor(t *testing.
 
 func TestDriftOnTheVirtualMachineIsHealed(t *testing.T) {
 	w := newWorld(t)
-	names := gateway.NamesFor(w.sr.Name)
+	names := w.names()
 	w.mustApply(w.input())
 
 	// Someone, under another field manager, makes the VM much bigger. The next
@@ -331,7 +392,7 @@ func TestDriftOnTheVirtualMachineIsHealed(t *testing.T) {
 
 func TestServiceChangesAreAppliedExceptTheLoadBalancerClass(t *testing.T) {
 	w := newWorld(t)
-	names := gateway.NamesFor(w.sr.Name)
+	names := w.names()
 	withClass := func(class string) func(*gateway.Input) {
 		return func(in *gateway.Input) { in.Config.Service.LoadBalancerClass = class }
 	}
@@ -371,7 +432,7 @@ func TestServiceChangesAreAppliedExceptTheLoadBalancerClass(t *testing.T) {
 
 func TestAServiceThatIsNotALoadBalancerYetMayBeGivenAClass(t *testing.T) {
 	w := newWorld(t)
-	names := gateway.NamesFor(w.sr.Name)
+	names := w.names()
 	yes := true
 	// The class cannot be changed once a Service is a load balancer, but one that
 	// is not is free to become one of any class.
@@ -461,7 +522,7 @@ func TestWhatSomeoneElseMadeIsNotTakenOver(t *testing.T) {
 
 func TestWhatAnotherSiteRouterOwnsIsNotTakenOver(t *testing.T) {
 	w := newWorld(t)
-	names := gateway.NamesFor(w.sr.Name)
+	names := w.names()
 	other := &v1alpha1.SiteRouter{Name: "other", Namespace: w.ns, Spec: v1alpha1.SiteRouterSpec{Peer: v1alpha1.Peer{Address: "203.0.113.20"}}}
 	mustCreate(t, other)
 	yes := true
@@ -482,7 +543,7 @@ func TestWhatAnotherSiteRouterOwnsIsNotTakenOver(t *testing.T) {
 
 func TestApplyStopsAtTheFirstObjectThatFails(t *testing.T) {
 	w := newWorld(t)
-	names := gateway.NamesFor(w.sr.Name)
+	names := w.names()
 	// The Secret of the credentials is first in the order of creation.
 	mustCreate(t, &corev1.Secret{Name: names.APIKey, Namespace: w.ns, Data: map[string][]byte{"token": []byte("x")}})
 

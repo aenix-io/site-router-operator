@@ -50,9 +50,10 @@ import (
 // CDI or Cilium and does not break when one of them moves a field it does not
 // use.
 var (
-	VirtualMachineGVK      = schema.GroupVersionKind{Group: "kubevirt.io", Version: "v1", Kind: "VirtualMachine"}
-	DataVolumeGVK          = schema.GroupVersionKind{Group: "cdi.kubevirt.io", Version: "v1beta1", Kind: "DataVolume"}
-	CiliumNetworkPolicyGVK = schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}
+	VirtualMachineGVK         = schema.GroupVersionKind{Group: "kubevirt.io", Version: "v1", Kind: "VirtualMachine"}
+	VirtualMachineInstanceGVK = schema.GroupVersionKind{Group: "kubevirt.io", Version: "v1", Kind: "VirtualMachineInstance"}
+	DataVolumeGVK             = schema.GroupVersionKind{Group: "cdi.kubevirt.io", Version: "v1beta1", Kind: "DataVolume"}
+	CiliumNetworkPolicyGVK    = schema.GroupVersionKind{Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy"}
 )
 
 // Ports of the tunnel.
@@ -64,6 +65,13 @@ const (
 // linkLocal is always denied to the gateway: it holds the metadata endpoint of
 // a cloud.
 const linkLocal = "169.254.0.0/16"
+
+// bindImmediately is the annotation that has CDI import a DataVolume without
+// waiting for a pod to use it. A storage class that binds a volume when a pod is
+// scheduled would otherwise leave the disk of another image unimported until the
+// gateway had already been moved to it, which is the one thing the import is
+// there to precede.
+const bindImmediately = "cdi.kubevirt.io/storage.bind.immediate.requested"
 
 // What recurs in the objects, which are built as maps.
 const (
@@ -103,7 +111,7 @@ func Render(in Input) ([]client.Object, error) {
 	if err := in.check(); err != nil {
 		return nil, err
 	}
-	r := renderer{in: in, names: NamesFor(in.Instance.Name)}
+	r := renderer{in: in, names: NamesFor(in.Instance.Name).ForImage(in.Image)}
 
 	url, err := registryURL(in.Image)
 	if err != nil {
@@ -181,6 +189,13 @@ func (in Input) check() error {
 	return nil
 }
 
+// CheckImage says whether image is a reference the gateway can be made from: one
+// pinned by a digest.
+func CheckImage(image string) error {
+	_, err := registryURL(image)
+	return err
+}
+
 var (
 	digestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	tagRE    = regexp.MustCompile(`:[^:/]+$`)
@@ -241,12 +256,27 @@ func (r renderer) secret(name string, data map[string][]byte) *corev1.Secret {
 	}
 }
 
+// forImage marks an object as made for the image of the gateway.
+func (r renderer) forImage(o interface {
+	GetAnnotations() map[string]string
+	SetAnnotations(map[string]string)
+}) {
+	a := o.GetAnnotations()
+	if a == nil {
+		a = map[string]string{}
+	}
+	a[v1alpha1.AnnotationImageDigest], _ = ImageDigest(r.in.Image)
+	o.SetAnnotations(a)
+}
+
 func (r renderer) apiKeySecret() *corev1.Secret {
 	return r.secret(r.names.APIKey, r.in.Plan.Credentials)
 }
 
 func (r renderer) cloudInitSecret() *corev1.Secret {
-	return r.secret(r.names.CloudInit, r.in.Plan.SeedFiles)
+	s := r.secret(r.names.CloudInit, r.in.Plan.SeedFiles)
+	r.forImage(s)
+	return s
 }
 
 func (r renderer) pskSecret() *corev1.Secret {
@@ -281,11 +311,17 @@ func (r renderer) dataVolume(url string) *unstructured.Unstructured {
 	if class := r.storageClass(); class != "" {
 		storage["storageClassName"] = class
 	}
-	return r.unstructured(DataVolumeGVK, r.names.BootDisk, map[string]any{
+	disk := r.unstructured(DataVolumeGVK, r.names.BootDisk, map[string]any{
 		"contentType": "kubevirt",
 		"source":      map[string]any{"registry": registry},
 		"storage":     storage,
 	})
+	disk.SetLabels(DiskLabels(r.in.Instance.Name))
+	r.forImage(disk)
+	a := disk.GetAnnotations()
+	a[bindImmediately] = "true"
+	disk.SetAnnotations(a)
+	return disk
 }
 
 // storageClass is the one the SiteRouter asks for, else the one of the platform.

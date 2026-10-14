@@ -52,7 +52,7 @@ func TestAssertInvariantsAcceptsWhatRenderReturns(t *testing.T) {
 }
 
 func TestAssertInvariantsSeesWhatIsBroken(t *testing.T) {
-	names := NamesFor("branch-office")
+	names := NamesFor("branch-office").ForImage(testImage)
 	vmPath := func(p ...string) []string { return append([]string{"spec", "template"}, p...) }
 	set := func(u *unstructured.Unstructured, v any, path ...string) {
 		if err := unstructured.SetNestedField(u.Object, v, path...); err != nil {
@@ -248,6 +248,42 @@ func TestAssertInvariantsSeesWhatIsBroken(t *testing.T) {
 			return o
 		}, `asks for "10Gi"`},
 
+		// CDI hands the labels of a disk to the pod that imports it, and the pod that
+		// carries the instance label is the gateway to the policies that close its
+		// egress. A disk with it would have its own importer cut off from the registry.
+		{"a disk that carries the instance label", func(t *testing.T, o []client.Object) []client.Object {
+			dv(t, o).SetLabels(map[string]string{
+				v1alpha1.LabelManagedBy:  v1alpha1.ManagedByValue,
+				v1alpha1.LabelBootDiskOf: "branch-office",
+				v1alpha1.LabelInstance:   "branch-office",
+			})
+			return o
+		}, "carries the label siterouter.aenix.io/instance, which CDI would hand to the pod"},
+		{"a disk that does not carry its own label", func(t *testing.T, o []client.Object) []client.Object {
+			dv(t, o).SetLabels(map[string]string{v1alpha1.LabelManagedBy: v1alpha1.ManagedByValue})
+			return o
+		}, "does not carry the label siterouter.aenix.io/boot-disk-of"},
+		{"a disk of another instance", func(t *testing.T, o []client.Object) []client.Object {
+			dv(t, o).SetLabels(DiskLabels("other"))
+			return o
+		}, "does not carry the label siterouter.aenix.io/boot-disk-of"},
+		{"a disk that does not say which image it is for", func(t *testing.T, o []client.Object) []client.Object {
+			unstructured.RemoveNestedField(dv(t, o).Object, "metadata", "annotations", v1alpha1.AnnotationImageDigest)
+			return o
+		}, "is marked as made for the image"},
+		{"a disk made for another image", func(t *testing.T, o []client.Object) []client.Object {
+			set(dv(t, o), "sha256:"+strings.Repeat("a", 64), "metadata", "annotations", v1alpha1.AnnotationImageDigest)
+			return o
+		}, "is marked as made for the image"},
+		{"a seed that does not say which image it is for", func(t *testing.T, o []client.Object) []client.Object {
+			delete(secretOf(t, o, names.CloudInit).Annotations, v1alpha1.AnnotationImageDigest)
+			return o
+		}, "is marked as made for the image"},
+		{"a seed made for another image", func(t *testing.T, o []client.Object) []client.Object {
+			secretOf(t, o, names.CloudInit).Annotations[v1alpha1.AnnotationImageDigest] = "sha256:" + strings.Repeat("b", 64)
+			return o
+		}, "is marked as made for the image"},
+
 		// The Service.
 		{"a service that is not a load balancer", func(t *testing.T, o []client.Object) []client.Object {
 			svc(t, o).Spec.Type = corev1.ServiceTypeClusterIP
@@ -425,7 +461,7 @@ func TestAssertInvariantsSeesWhatIsBroken(t *testing.T) {
 func TestAssertInvariantsReportsEveryViolation(t *testing.T) {
 	in := newInput()
 	objs := mustRender(t, in)
-	names := NamesFor("branch-office")
+	names := NamesFor("branch-office").ForImage(testImage)
 	svc := find(t, objs, "Service", names.Tunnel).(*corev1.Service)
 	svc.Spec.Type = corev1.ServiceTypeClusterIP
 	svc.Spec.ExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyCluster

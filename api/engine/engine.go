@@ -40,10 +40,16 @@ type Info struct {
 
 // Tunnel is one IPsec tunnel to a remote site.
 type Tunnel struct {
-	ID              string // operator-chosen, stable across renders
-	PeerAddress     string
-	PSK             string
-	LocalID         string
+	ID          string // operator-chosen, stable across renders
+	PeerAddress string
+	PSK         string
+	// LocalID is the identity the gateway presents: the address the remote end is
+	// configured to call.
+	LocalID string
+	// LocalSelectors and RemoteSelectors are the traffic selectors of the tunnel.
+	// The engine pairs them as its protocol needs, every local one with every
+	// remote one. The local side is "any" (0.0.0.0/0): a workload of the tenant
+	// keeps its own address across the tunnel, so it is not a fixed network.
 	LocalSelectors  []string
 	RemoteSelectors []string
 }

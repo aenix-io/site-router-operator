@@ -57,7 +57,7 @@ import (
 //     beyond the tunnel from the world and the management port for the
 //     operator. What other policies of the namespace admit is not up to them.
 func assertInvariants(in Input, objs []client.Object) error {
-	a := &audit{in: in, names: NamesFor(in.Instance.Name)}
+	a := &audit{in: in, names: NamesFor(in.Instance.Name).ForImage(in.Image)}
 	a.run(objs)
 	return errors.Join(a.errs...)
 }
@@ -114,7 +114,9 @@ func (a *audit) common(key string, m map[string]any) {
 	if labels[v1alpha1.LabelManagedBy] != v1alpha1.ManagedByValue {
 		a.fail(key, "does not carry the label %s=%s", v1alpha1.LabelManagedBy, v1alpha1.ManagedByValue)
 	}
-	if labels[v1alpha1.LabelInstance] != sr.Name {
+	// The boot disk is the one object that does not carry the instance label, and is
+	// checked for not carrying it with the rest of what is said about it.
+	if str(m, "kind") != DataVolumeGVK.Kind && labels[v1alpha1.LabelInstance] != sr.Name {
 		a.fail(key, "does not carry the label %s=%s", v1alpha1.LabelInstance, sr.Name)
 	}
 	owners := list(m, "metadata", "ownerReferences")
@@ -212,6 +214,16 @@ func (a *audit) dataVolume() {
 	if !ok {
 		return
 	}
+	// CDI gives the pod that imports the disk the labels of the disk. With the
+	// instance label on it, that pod would be taken for the gateway by the network
+	// policies, the Service and the Forwarder, and would lose its egress.
+	labels := strMap(m, "metadata", "labels")
+	if _, ok := labels[v1alpha1.LabelInstance]; ok {
+		a.fail(key, "carries the label %s, which CDI would hand to the pod that imports the disk, and which makes a pod the gateway", v1alpha1.LabelInstance)
+	}
+	if labels[v1alpha1.LabelBootDiskOf] != a.in.Instance.Name {
+		a.fail(key, "does not carry the label %s=%s", v1alpha1.LabelBootDiskOf, a.in.Instance.Name)
+	}
 	want, err := registryURL(a.in.Image)
 	if err != nil {
 		a.fail(key, "%v", err)
@@ -225,6 +237,20 @@ func (a *audit) dataVolume() {
 	}
 	if got, want := str(m, fieldSpec, "storage", "resources", "requests", "storage"), fmt.Sprintf("%dGi", a.in.Plan.DiskGiB); got != want {
 		a.fail(key, "asks for %q, not for %q, which the plan needs", got, want)
+	}
+	a.madeForTheImage(key, m)
+}
+
+// madeForTheImage checks that an object that is named after the image says which
+// one it was made for, so that a name that two images share is not mistaken for
+// the one that is meant.
+func (a *audit) madeForTheImage(key string, m map[string]any) {
+	want, err := ImageDigest(a.in.Image)
+	if err != nil {
+		return
+	}
+	if got := strMap(m, "metadata", "annotations")[v1alpha1.AnnotationImageDigest]; got != want {
+		a.fail(key, "is marked as made for the image %q, not for %q", got, want)
 	}
 }
 
@@ -282,6 +308,9 @@ func (a *audit) secrets(objs []client.Object) {
 	}
 	check(a.names.APIKey, a.in.Plan.Credentials)
 	check(a.names.CloudInit, a.in.Plan.SeedFiles)
+	if m, ok := a.byKey["Secret/"+a.names.CloudInit]; ok {
+		a.madeForTheImage("Secret/"+a.names.CloudInit, m)
+	}
 	if OwnsPSKSecret(a.in.Instance) {
 		check(a.names.PSK, map[string][]byte{"psk": a.in.PSK})
 	}

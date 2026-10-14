@@ -204,6 +204,20 @@ func (c *Connector) resolve(ctx context.Context, f *v1alpha1.Forwarder) (gateway
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("the scope selector of %s/%s: %w", f.Namespace, f.Name, err)
 	}
+	// A gateway is a pod that any Forwarder of the namespace selects as its own,
+	// and none of them is in the scope of another.
+	siblings := &v1alpha1.ForwarderList{}
+	if err := c.Client.List(ctx, siblings, client.InNamespace(f.Namespace)); err != nil {
+		return nil, nil, nil, fmt.Errorf("listing the Forwarders of %s: %w", f.Namespace, err)
+	}
+	var anyGateway []labels.Selector
+	for _, o := range siblings.Items {
+		sel, err := metav1.LabelSelectorAsSelector(&o.Spec.WorkloadSelector)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("the workload selector of %s/%s: %w", o.Namespace, o.Name, err)
+		}
+		anyGateway = append(anyGateway, sel)
+	}
 	pods := &corev1.PodList{}
 	if err := c.Client.List(ctx, pods, client.InNamespace(f.Namespace)); err != nil {
 		return nil, nil, nil, fmt.Errorf("listing the pods of %s: %w", f.Namespace, err)
@@ -217,6 +231,8 @@ func (c *Connector) resolve(ctx context.Context, f *v1alpha1.Forwarder) (gateway
 		switch {
 		case workload.Matches(set):
 			gateways = append(gateways, ip)
+		case slices.ContainsFunc(anyGateway, func(s labels.Selector) bool { return s.Matches(set) }):
+			// The gateway of another Forwarder: not the tenant's.
 		case tenant.Matches(set) && reachable(p):
 			scope = append(scope, ip)
 			scopePods = append(scopePods, p)

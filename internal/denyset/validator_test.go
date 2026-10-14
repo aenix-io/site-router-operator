@@ -203,3 +203,64 @@ func TestNewValidatorRefusesWhatItCannotWorkWith(t *testing.T) {
 		t.Error("a validator with no Discoverer was made")
 	}
 }
+
+func TestSourceGivesWhatIsConfiguredAndWhatIsFound(t *testing.T) {
+	node := &corev1.Node{Name: "n1", Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "192.0.2.77"}}}}
+	lb := service("lb", corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer}, "192.0.2.88")
+	s, err := NewSource(testConfig, NewDiscoverer(readerOf(t, node, lb), time.Minute, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nets, err := s.Networks(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nets.Pod) != 1 || len(nets.Service) != 1 || len(nets.Join) != 1 ||
+		len(nets.Nodes) != 1 || nets.Nodes[0] != "192.0.2.77/32" || len(nets.LoadBalancers) != 1 || nets.LoadBalancers[0] != "192.0.2.88/32" {
+		t.Errorf("Networks = %+v", nets)
+	}
+
+	// Asked twice, it gives the same, and a caller that changes what it got does
+	// not change what the next one gets.
+	nets.Nodes[0] = "tampered"
+	again, err := s.Networks(t.Context())
+	if err != nil || again.Nodes[0] != "192.0.2.77/32" {
+		t.Errorf("Networks again = %+v, %v", again, err)
+	}
+}
+
+func TestSourceCannotSayWhenTheClusterDoesNotAnswer(t *testing.T) {
+	r := readerOf(t)
+	boom := errors.New("the API is down")
+	r.fail.Store(&boom)
+	s, err := NewSource(testConfig, NewDiscoverer(r, time.Minute, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Networks(t.Context()); !errors.Is(err, reconcile.ErrValidationUnavailable) || !errors.Is(err, boom) {
+		t.Errorf("error = %v, want one that wraps ErrValidationUnavailable and the cause", err)
+	}
+}
+
+func TestSourceRefusesWhatItCannotWorkWith(t *testing.T) {
+	if _, err := NewSource(Config{}, NewDiscoverer(readerOf(t), time.Minute, nil)); err == nil {
+		t.Error("a Source was made of a configuration that does not hold together")
+	}
+	if _, err := NewSource(testConfig, nil); err == nil {
+		t.Error("a Source was made with no Discoverer")
+	}
+}
+
+// A network of the cluster that cannot be read is a fault of the configuration,
+// which NewSource checks, and cannot get here by that road. If one does, the
+// validator cannot judge, and says so instead of refusing the tenant for it.
+func TestAValidatorThatCannotReadANetworkOfTheClusterCannotJudge(t *testing.T) {
+	s := &Source{configured: Networks{Pod: []string{"nonsense"}}, d: NewDiscoverer(readerOf(t), time.Minute, nil)}
+	err := s.Validator()(t.Context(), goodInstance())
+	if !errors.Is(err, reconcile.ErrValidationUnavailable) {
+		t.Fatalf("error = %v, want one that wraps ErrValidationUnavailable", err)
+	}
+	if _, isRejection := errors.AsType[*RejectedError](err); isRejection {
+		t.Error("a fault of the configuration was reported as a rejection of the tenant")
+	}
+}

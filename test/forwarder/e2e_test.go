@@ -26,6 +26,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/aenix-io/site-router-operator/api/engine"
@@ -272,6 +273,34 @@ func TestTheScopeLeavesOutWhatIsNotTheTenantsToReach(t *testing.T) {
 	slices.Sort(want)
 	if !slices.Equal(rep.Scope, want) {
 		t.Errorf("scope = %v, want the two pods of the tenant and the cluster IP of the Service: %v", rep.Scope, want)
+	}
+}
+
+// The gateways of the namespace are left out of the scope by the connector as
+// well as by the selector of the operator: a Forwarder whose scope selector is
+// empty, as the API allows, still does not route to a gateway.
+func TestAConnectorLeavesEveryGatewayOutOfTheScopeWhateverTheSelectorSays(t *testing.T) {
+	s := readyWorld(t, false)
+	other := &v1alpha1.SiteRouter{Name: "other", Namespace: s.ns, Spec: v1alpha1.SiteRouterSpec{Peer: v1alpha1.Peer{Address: "203.0.113.20"}}}
+	mustCreate(t, other)
+	s.gatewayPod("other", "10.244.1.99")
+	if err := s.m.For(other).Ensure(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	s.pass(true, remote)
+
+	f := s.forwarderObject()
+	f.Spec.ScopeSelector = metav1.LabelSelector{}
+	if err := k8sClient.Update(t.Context(), f, client.FieldOwner("someone-else")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.conn.Sync(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	got := s.forwarderObject().Status.Scope.Addresses
+	if !slices.Equal(got, []string{"10.244.1.5", "10.244.1.6"}) {
+		t.Errorf("scope = %v with an empty scope selector, want the two pods of the tenant and no gateway", got)
 	}
 }
 

@@ -319,3 +319,70 @@ func TestConfigNetworks(t *testing.T) {
 		t.Errorf("a join network that is not configured became %v", n.Join)
 	}
 }
+
+func TestDestinationsKeepsWhatIsTheTenantsToReach(t *testing.T) {
+	kept, dropped, err := Destinations([]string{"10.244.1.5", "10.244.1.6", "10.96.0.10", "100.64.0.4", "198.51.100.9"}, cluster())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pods and services of the tenant are inside the networks of the cluster, so
+	// those are not what is dropped. Neither is an address outside every one, as a
+	// pod of a custom subnet has.
+	want := []string{"10.244.1.5/32", "10.244.1.6/32", "10.96.0.10/32", "100.64.0.4/32", "198.51.100.9/32"}
+	slices.Sort(want)
+	if !slices.Equal(kept, want) || dropped != 0 {
+		t.Errorf("kept %v and dropped %d, want %v and none", kept, dropped, want)
+	}
+}
+
+func TestDestinationsDropsWhatIsNotTheTenantsToReach(t *testing.T) {
+	for name, addr := range map[string]string{
+		"a node":                  "192.168.100.5",
+		"a load balancer":         "203.0.113.10",
+		"a network of the others": "172.21.3.4",
+		"the metadata address":    "169.254.169.254",
+		"loopback":                "127.0.0.1",
+		"IPv6":                    "2001:db8::5",
+		"not an address":          "web-0",
+		"a network":               "10.244.1.0/24",
+		"empty":                   "",
+	} {
+		kept, dropped, err := Destinations([]string{addr, "10.244.1.5"}, cluster())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(kept, []string{"10.244.1.5/32"}) || dropped != 1 {
+			t.Errorf("%s: kept %v and dropped %d, want only the pod kept and one dropped", name, kept, dropped)
+		}
+	}
+}
+
+func TestDestinationsAreSortedAndUnique(t *testing.T) {
+	kept, dropped, err := Destinations([]string{"10.244.1.9", "10.244.1.5", "10.244.1.9", "010.244.1.5"}, cluster())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(kept, []string{"10.244.1.5/32", "10.244.1.9/32"}) || dropped != 1 {
+		t.Errorf("kept %v and dropped %d, want two in order and the badly written one dropped", kept, dropped)
+	}
+}
+
+func TestDestinationsOfNothingIsNothing(t *testing.T) {
+	kept, dropped, err := Destinations(nil, cluster())
+	if err != nil || len(kept) != 0 || dropped != 0 {
+		t.Errorf("got %v, %d, %v", kept, dropped, err)
+	}
+}
+
+func TestDestinationsFailWhenANetworkOfTheClusterCannotBeRead(t *testing.T) {
+	if _, _, err := Destinations([]string{"10.244.1.5"}, Networks{Nodes: []string{"nonsense"}}); err == nil {
+		t.Error("an address was passed by a deny set that could not be read")
+	}
+}
+
+func TestDestinationsDropsLinkLocalAndLoopbackWithNoConfiguration(t *testing.T) {
+	kept, dropped, err := Destinations([]string{"169.254.1.1", "127.0.0.1", "10.244.1.5"}, Networks{})
+	if err != nil || !slices.Equal(kept, []string{"10.244.1.5/32"}) || dropped != 2 {
+		t.Errorf("got %v, %d, %v", kept, dropped, err)
+	}
+}
