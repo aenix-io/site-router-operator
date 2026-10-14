@@ -8,4 +8,21 @@ layout:
 - go.kubebuilder.io/v4
 projectName: site-router-operator
 repo: github.com/aenix-io/site-router-operator
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: aenix.io
+  group: siterouter
+  kind: SiteRouter
+  path: github.com/aenix-io/site-router-operator/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: aenix.io
+  group: siterouter
+  kind: Forwarder
+  path: github.com/aenix-io/site-router-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

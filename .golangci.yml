@@ -52,6 +52,11 @@ linters:
           - dupl
           - lll
         path: internal/*
+      # Tables of API test cases read better with their literals inline.
+      - linters:
+          - goconst
+          - lll
+        path: test/*
     paths:
       - third_party$
       - builtin$

@@ -84,6 +84,18 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test -race ./... -coverprofile cover.out
 	cd api && go test -race ./...
 
+# The CRD schema is tested on more than one Kubernetes version: the CEL library
+# for CIDRs first shipped in 1.31, 1.34 is what the dev stand runs, and the last
+# one is the version of the client libraries.
+CRD_K8S_VERSIONS ?= 1.31 1.34 $(ENVTEST_K8S_VERSION)
+
+.PHONY: test-crd
+test-crd: manifests setup-envtest ## Run the CRD schema tests on every Kubernetes version in CRD_K8S_VERSIONS.
+	for v in $(CRD_K8S_VERSIONS); do \
+		echo "== Kubernetes $$v"; \
+		KUBEBUILDER_ASSETS="$$("$(ENVTEST)" use $$v --bin-dir "$(LOCALBIN)" -p path)" go test -count=1 ./test/crd/ || exit 1; \
+	done
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	for m in $(MODULES); do (cd $$m && "$(GOLANGCI_LINT)" run) || exit 1; done

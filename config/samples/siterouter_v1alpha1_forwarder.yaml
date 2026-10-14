@@ -1,0 +1,14 @@
+apiVersion: siterouter.aenix.io/v1alpha1
+kind: Forwarder
+metadata:
+  name: forwarder-sample
+spec:
+  workloadSelector:
+    matchLabels:
+      vm.kubevirt.io/name: site-router-sample
+  scopeSelector:
+    matchLabels:
+      tier: app
+  cidrs:
+    - 192.0.2.0/24
+    - 198.51.100.0/25

@@ -1,0 +1,25 @@
+apiVersion: siterouter.aenix.io/v1alpha1
+kind: SiteRouter
+metadata:
+  name: siterouter-sample
+spec:
+  peer:
+    address: 203.0.113.10
+    auth:
+      secretRef:
+        name: siterouter-sample-psk
+  remoteCIDRs:
+    - 192.0.2.0/24
+    - 198.51.100.0/25
+  staticRoutes:
+    - destination: 10.9.0.0/16
+      nextHop: 10.0.0.1
+  bgp:
+    enabled: true
+    localASN: 65001
+    neighbors:
+      - address: 10.0.0.2
+        remoteASN: 65002
+  resources:
+    cpu: 2
+    memory: 2Gi
