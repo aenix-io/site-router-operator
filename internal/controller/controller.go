@@ -101,6 +101,9 @@ type Options struct {
 	Config   config.Config
 	Engine   engine.Engine
 	Networks *denyset.Source
+	// Network is how the cluster network is asked for the routes of a SiteRouter.
+	// With none, it is asked through the Forwarder API.
+	Network NetworkOf
 	// Metrics is where the series go. With none, none are kept.
 	Metrics *Metrics
 	// Now is the clock, and is time.Now when nil.
@@ -111,20 +114,20 @@ type Options struct {
 
 // Reconciler reconciles SiteRouters.
 type Reconciler struct {
-	client     client.Client
-	reader     client.Reader
-	recorder   events.EventRecorder
-	config     config.Config
-	engine     engine.Engine
-	networks   *denyset.Source
-	metrics    *Metrics
-	now        func() time.Time
-	rand       io.Reader
-	stepper    *reconcile.Stepper
-	applier    *gateway.Applier
-	forwarders *forwarder.Manager
-	gate       *rollout.Gate
-	revisions  revisions
+	client    client.Client
+	reader    client.Reader
+	recorder  events.EventRecorder
+	config    config.Config
+	engine    engine.Engine
+	networks  *denyset.Source
+	metrics   *Metrics
+	now       func() time.Time
+	rand      io.Reader
+	stepper   *reconcile.Stepper
+	applier   *gateway.Applier
+	network   NetworkOf
+	gate      *rollout.Gate
+	revisions revisions
 
 	// restored is true once the places of the moves that were under way have been
 	// taken, which is before the first pass.
@@ -159,29 +162,33 @@ func New(o Options) (*Reconciler, error) {
 		return nil, err
 	}
 	r := &Reconciler{
-		client:   o.Client,
-		reader:   o.Reader,
-		recorder: o.Recorder,
-		config:   o.Config,
-		engine:   o.Engine,
-		networks: o.Networks,
-		metrics:  o.Metrics,
-		now:      o.Now,
-		rand:     o.Rand,
-		stepper:  stepper,
-		applier:  &gateway.Applier{Client: o.Client},
-		forwarders: &forwarder.Manager{
-			Client:             o.Client,
-			Reader:             o.Reader,
-			NotRespondingAfter: o.Config.Timing.ForwarderNotResponding.Duration,
-			Now:                o.Now,
-		},
+		client:      o.Client,
+		reader:      o.Reader,
+		recorder:    o.Recorder,
+		config:      o.Config,
+		engine:      o.Engine,
+		networks:    o.Networks,
+		metrics:     o.Metrics,
+		now:         o.Now,
+		rand:        o.Rand,
+		stepper:     stepper,
+		applier:     &gateway.Applier{Client: o.Client},
+		network:     o.Network,
 		gate:        rollout.NewGate(o.Config.Upgrade.MaxConcurrent),
 		revisions:   revisions{m: map[types.NamespacedName]revision{}},
 		unsupported: map[types.NamespacedName]string{},
 	}
 	if r.now == nil {
 		r.now = time.Now
+	}
+	if r.network == nil {
+		forwarders := &forwarder.Manager{
+			Client:             o.Client,
+			Reader:             o.Reader,
+			NotRespondingAfter: o.Config.Timing.ForwarderNotResponding.Duration,
+			Now:                o.Now,
+		}
+		r.network = func(sr *v1alpha1.SiteRouter) Network { return forwarders.For(sr) }
 	}
 	if r.rand == nil {
 		r.rand = rand.Reader
@@ -267,7 +274,7 @@ func (r *Reconciler) pass(ctx context.Context, sr *v1alpha1.SiteRouter) outcome 
 	out := outcome{requeue: r.config.Timing.Poll.Duration}
 
 	gw := r.makeGateway(ctx, sr, &st)
-	routes := r.forwarders.For(sr)
+	routes := r.network(sr)
 
 	var scope []string
 	if gw.objects {

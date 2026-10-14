@@ -60,7 +60,7 @@ func (r *Reconciler) finalize(ctx context.Context, sr *v1alpha1.SiteRouter) (ctr
 	if !controllerutil.ContainsFinalizer(sr, Finalizer) {
 		return ctrl.Result{}, nil
 	}
-	routes := r.forwarders.For(sr)
+	routes := r.network(sr)
 
 	// A Forwarder that is not the SiteRouter's is not its to take routes from, and
 	// is not a reason to keep it: there is nothing of its own to wait for.
