@@ -261,6 +261,12 @@ func Resolve(f *v1alpha1.Forwarder, siblings []v1alpha1.Forwarder, pods []corev1
 		if svc.Namespace != f.Namespace {
 			continue
 		}
+		// The Service in front of a gateway takes the tunnel. A workload has no
+		// need of it through the gateway, and the filter would open to one more
+		// address.
+		if _, ok := svc.Labels[v1alpha1.LabelInstance]; ok {
+			continue
+		}
 		for _, ip := range svc.Spec.ClusterIPs {
 			if a, err := netip.ParseAddr(ip); err == nil && a.Is4() {
 				scope = append(scope, a)

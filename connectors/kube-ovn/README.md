@@ -19,7 +19,9 @@ It is a Go module of its own that depends only on the `api` module of this repos
 | VirtualMachineInstance | UID, `status.activePods` | nothing |
 | Pod | labels, owner references, annotations, phase, addresses, `hostNetwork` | `ovn.kubernetes.io/port_security` (`"false"` on the gateway of a `Forwarder` that asks for networks, `"true"` when that ends) and `kube-ovn.siterouter.aenix.io/granted-by`, which names the `Forwarder` and decides nothing |
 | Namespace | annotations | `ovn.kubernetes.io/routes`, merged by destination with what others wrote; `kube-ovn.siterouter.aenix.io/route-owners`, the gateway addresses each `Forwarder` routes to |
-| Service | cluster IPs | nothing |
+| Service | labels, cluster IPs | nothing |
+
+The scope of a `Forwarder` is the pods its scope selector picks and the cluster IPs of the Services of the namespace, except the Services that carry the label `siterouter.aenix.io/instance`: those take the tunnel of a gateway, and nothing behind the gateway needs them.
 
 A grant is decided on what the connector verifies, never on an annotation it reads back from a pod. It is taken back by writing `"true"`: kube-ovn takes a pod with no annotation for one with the check off. A gateway is shut when its `Forwarder` asks for no networks, is deleted, or the pod is shown to be no longer the gateway; a restart of the connector, an apiserver that does not answer, or a status of KubeVirt that is late leaves a working gateway as it is.
 

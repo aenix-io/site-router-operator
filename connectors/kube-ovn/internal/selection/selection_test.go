@@ -187,6 +187,8 @@ func TestResolve(t *testing.T) {
 		{Name: "web", Namespace: ns, Spec: corev1.ServiceSpec{ClusterIPs: []string{"10.96.0.20", "fd00:96::20"}}},
 		{Name: "headless", Namespace: ns, Spec: corev1.ServiceSpec{ClusterIPs: []string{"None"}}},
 		{Name: "other", Namespace: "other", Spec: corev1.ServiceSpec{ClusterIPs: []string{"10.96.0.30"}}},
+		// The tunnel of a gateway, which is no destination behind it.
+		{Name: "tunnel", Namespace: ns, Labels: gwLabel, Spec: corev1.ServiceSpec{ClusterIPs: []string{"10.96.0.21"}}},
 	}
 
 	v, err := Resolve(f, []v1alpha1.Forwarder{sibling, *f}, pods, services, instance(podUID))
