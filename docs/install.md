@@ -84,7 +84,7 @@ The operator takes the `spec` of a SiteRouter as input it does not trust, and tw
 
 The chart installs the CRDs of `SiteRouter` and `Forwarder`. They are the ones controller-gen makes in `config/crd/bases`, copied into the chart by `make chart-manifests`, and `make check-generated` fails when the copy is behind. They are templates rather than in `crds/`, which Helm installs once and never upgrades, so an upgrade of the chart brings the schema of the operator it runs. They carry `helm.sh/resource-policy: keep`: uninstalling the release or setting `crds.install: false` leaves them in the cluster, since deleting a CRD deletes every object of it, and with every SiteRouter every gateway. Delete them by hand to remove them.
 
-A platform that delivers the CRDs itself sets `crds.install: false`. Helm does not take over a CRD that exists and is not its own, so on a cluster where they were installed some other way the install fails until it is set.
+A platform that delivers the CRDs itself sets `crds.install: false`. Helm does not take over a CRD that exists and is not its own, so on a cluster where they were installed some other way the install fails until it is set. A platform that serves the Forwarder API itself, with the connectors of its network, sets `crds.forwarder.install: false`: the chart then installs the CRD of `SiteRouter` alone, and the operator uses the CRD of `Forwarder` that is there, which has to be the schema of the API module the operator was built with.
 
 ## What the operator is granted
 

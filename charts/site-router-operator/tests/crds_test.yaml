@@ -47,3 +47,21 @@ tests:
     asserts:
       - hasDocuments:
           count: 0
+
+  - it: installs only the CRD of SiteRouter for a platform that serves the Forwarder API
+    set:
+      crds.forwarder.install: false
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: metadata.name
+          value: siterouters.siterouter.aenix.io
+
+  - it: installs no CRD when the platform delivers them all, whatever it says of the Forwarder
+    set:
+      crds.install: false
+      crds.forwarder.install: true
+    asserts:
+      - hasDocuments:
+          count: 0
