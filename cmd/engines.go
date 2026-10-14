@@ -18,10 +18,7 @@ package main
 
 // The engines the operator can drive are the ones imported here: an engine makes
 // itself available from an init function, as a database driver does, and the
-// operator itself never names one. The engine for barerouter is imported here once
-// its module exists:
-//
-//	_ "github.com/aenix-io/barerouter/engine"
-//
-// Until then the operator starts and says that the engine named in its
-// configuration is not registered.
+// operator itself never names one.
+import (
+	_ "github.com/aenix-io/barerouter/engine"
+)

@@ -3,7 +3,8 @@ module github.com/aenix-io/site-router-operator
 go 1.27.0
 
 require (
-	github.com/aenix-io/site-router-operator/api v0.0.0-00010101000000-000000000000
+	github.com/aenix-io/barerouter/engine v0.1.0
+	github.com/aenix-io/site-router-operator/api v0.1.0
 	github.com/prometheus/client_golang v1.24.0
 	golang.org/x/sync v0.22.0
 	k8s.io/api v0.37.0
