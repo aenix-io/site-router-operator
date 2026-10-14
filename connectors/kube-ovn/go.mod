@@ -4,8 +4,11 @@ go 1.27.0
 
 replace github.com/aenix-io/site-router-operator/api => ../../api
 
+replace github.com/aenix-io/site-router-operator/connectors/conformance => ../conformance
+
 require (
 	github.com/aenix-io/site-router-operator/api v0.0.0-00010101000000-000000000000
+	github.com/aenix-io/site-router-operator/connectors/conformance v0.0.0-00010101000000-000000000000
 	k8s.io/api v0.37.0
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.0
