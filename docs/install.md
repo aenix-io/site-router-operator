@@ -67,6 +67,19 @@ The chart sets two keys that the operator has no default for: `config.upgrade.po
 
 Where gateways run and how their disks are stored is under `config.gateway`: `vm` (pod labels and annotations, `nodeSelector`, `tolerations`, `affinity`, `priorityClassName`, `runtimeClassName`), `dataVolume` (`storageClass`, used when a SiteRouter names none, `blockSize`, and how the importer pulls the image) and `service` (`loadBalancerClass`, which cannot be changed on a Service that exists, and `annotations`). `config.upgrade` and `config.timing` tune moves to another image and how often the operator looks.
 
+## Isolation of the gateway
+
+Under `cilium` the operator makes two CiliumNetworkPolicies for each gateway: one denies it the link-local range and `config.gateway.isolation.egressDenyCIDRs`, and the other admits to it the tunnel from the world and the management API for the operator. They add to the policies the namespace has and replace none of them. Cilium leaves a pod that a policy selects only what some policy allows, in the direction the policy is about (on Cilium 1.19 with kube-ovn, a policy of deny rules alone is enough). The two policies allow the tunnel and the management API and nothing else, so in a namespace with no other policy a gateway cannot reach its peer and takes no traffic from the pods that send through it.
+
+The namespace of a gateway therefore has to admit those pods to the gateway and let the gateway out to the world. The baseline policies of a Cozystack tenant namespace do both. Where there are no such policies, set `external` or `none`, which make no policy of their own.
+
+## Who may write a SiteRouter
+
+The operator takes the `spec` of a SiteRouter as input it does not trust, and two things in it reach further than the SiteRouter does. Let the application that wraps the operator write SiteRouters, not the tenants, or have it settle these two.
+
+- `spec.peer.auth.secretRef` names a Secret of the namespace of the SiteRouter, and the operator reads its `psk` key with its own permissions, whatever the author of the SiteRouter may read. Any Secret that holds that key is taken, except one a SiteRouter controls.
+- The annotation `siterouter.aenix.io/upgrade-to` names the image of the gateway from the versions in `config.engine.versions`, under either `config.upgrade.policy`, and the operator moves the gateway to it, to an older version as well. Whoever may edit the annotations of a SiteRouter can put its gateway back on a version with a known flaw.
+
 ## CRDs
 
 The chart installs the CRDs of `SiteRouter` and `Forwarder`. They are the ones controller-gen makes in `config/crd/bases`, copied into the chart by `make chart-manifests`, and `make check-generated` fails when the copy is behind. They are templates rather than in `crds/`, which Helm installs once and never upgrades, so an upgrade of the chart brings the schema of the operator it runs. They carry `helm.sh/resource-policy: keep`: uninstalling the release or setting `crds.install: false` leaves them in the cluster, since deleting a CRD deletes every object of it, and with every SiteRouter every gateway. Delete them by hand to remove them.

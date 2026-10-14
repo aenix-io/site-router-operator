@@ -180,8 +180,11 @@ config:
     # Who keeps the gateway pod apart from the other pods.
     isolation:
       # cilium: the operator makes two CiliumNetworkPolicies, which need Cilium
-      # in the cluster. external: the platform isolates the gateway itself and
-      # the operator makes no policy. none: no isolation, which also needs
+      # in the cluster and allow only the tunnel and the management API, so the
+      # namespace of a gateway has to admit the pods that send through it and
+      # let it out to the world, as the baseline of a Cozystack tenant namespace
+      # does. external: the platform isolates the gateway itself and the
+      # operator makes no policy. none: no isolation, which also needs
       # acknowledgeNone: true.
       mode: cilium
       # acknowledgeNone: false
