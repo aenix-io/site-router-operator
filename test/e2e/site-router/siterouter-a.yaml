@@ -1,0 +1,37 @@
+# The gateway under test.
+#
+# peer.address is left out: A is the end that is dialled, and the address of B,
+# the remote site, is a pod address that is known only at run time. The
+# establish-tunnel step sets it once B runs. Until then the gateway comes up,
+# its source filter is confirmed and its routes are programmed, with no tunnel
+# in its configuration.
+#
+# The pre-shared key is named, not generated, so that B can be given the same
+# one without reading what the operator made. The Secret is made by the suite
+# and is not the operator's.
+#
+# 192.0.2.0/24 is TEST-NET-1: a documentation range that overlaps no network of
+# the cluster, so the operator admits it. A range that does overlap is refused
+# before anything is made, which the Go tests cover and this suite does not.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: site-router-e2e-psk
+stringData:
+  # A fixed value shared with B's configuration. It is not a credential.
+  psk: site-router-e2e-psk-not-a-secret
+---
+apiVersion: siterouter.aenix.io/v1alpha1
+kind: SiteRouter
+metadata:
+  name: a
+spec:
+  peer:
+    auth:
+      secretRef:
+        name: site-router-e2e-psk
+  remoteCIDRs:
+    - 192.0.2.0/24
+  resources:
+    cpu: 2
+    memory: 2Gi

@@ -1,0 +1,149 @@
+# Remote site B: a second router VM standing in for the external site. It is a
+# plain VM and not a SiteRouter on purpose. The operator refuses remote networks
+# that overlap the cluster's, and B has to route the cluster-side backend into
+# the tunnel toward A, so it cannot be one. It carries a free-form static
+# configuration instead.
+#
+# What B does in the topology:
+#   - IPsec initiator: dials the tunnel address of A on UDP 500 and 4500 with the
+#     shared key, forcing UDP encapsulation.
+#   - The remote site: the dummy interface dum0 in 192.0.2.0/24, one of A's
+#     remoteCIDRs, is the declared source of remote traffic. dum1 in
+#     198.51.100.0/24 is the undeclared source of the first negative case.
+#   - The probe host: the scripts SSH into B (admin, password below) through the
+#     probe-driver pod and run ping, curl and nc sourced from the dummies.
+#
+# B boots the same appliance image as A. That image has no cloud-init: its seed
+# service copies `userdata` off the NoCloud disk verbatim to the configuration
+# file, so `userdata` is a raw configuration and not a `#cloud-config` document.
+# The line at the end that names the configuration version has to match the
+# image, or the guest runs a migration at boot that can drop nodes of the
+# configuration. It is the one of the 0.1.1 image.
+#
+# The configuration sets: eth0 on DHCP, both dummy sources, the HTTPS management
+# API with a key, SSH and a password for the probes. The IPsec part is not baked
+# in. It needs the tunnel address of A and the pod address of B, which are known
+# only at run time, so the establish-tunnel step pushes it over B's API.
+#
+# The password and the key below are fixtures of a test VM that exists for the
+# length of the run. They are not credentials.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: remote-site-b-cloudinit
+stringData:
+  userdata: |
+    interfaces {
+        ethernet eth0 {
+            address "dhcp"
+        }
+        dummy dum0 {
+            address "192.0.2.1/24"
+        }
+        dummy dum1 {
+            address "198.51.100.7/24"
+        }
+        loopback lo {
+        }
+    }
+    service {
+        https {
+            api {
+                keys {
+                    id remote-b {
+                        key "REMOTEB0000000000000000000000000000000B"
+                    }
+                }
+                rest {
+                }
+            }
+            listen-address "0.0.0.0"
+        }
+        ssh {
+            port "22"
+        }
+    }
+    system {
+        config-management {
+            commit-revisions "100"
+        }
+        console {
+            device ttyS0 {
+                speed "115200"
+            }
+        }
+        host-name "remote-site-b"
+        login {
+            user admin {
+                authentication {
+                    plaintext-password "e2edrive"
+                }
+            }
+        }
+    }
+
+    // Warning: Do not remove the following line.
+    // vyos-config-version: "bgp@8:broadcast-relay@1:cluster@2:config-management@1:conntrack@6:conntrack-sync@2:container@3:dhcp-relay@2:dhcp-server@11:dhcpv6-server@6:dns-dynamic@5:dns-forwarding@4:firewall@20:flow-accounting@3:https@7:ids@2:interfaces@34:ipoe-server@4:ipsec@14:isis@3:l2tp@10:lldp@3:mdns@1:monitoring@2:nat@8:nat66@3:nhrp@1:ntp@3:openconnect@3:openvpn@6:ospf@2:pim@1:pki@1:policy@9:pppoe-server@13:pptp@6:qos@3:quagga@12:reverse-proxy@3:rip@1:rpki@2:snmp@3:ssh@3:sstp@7:system@33:vpp@6:vrf@4:vrrp@4:vyos-accel-ppp@2:wanloadbalance@4:webproxy@2"
+    // Release version: 0.1.1
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: remote-site-b
+spec:
+  runStrategy: Always
+  dataVolumeTemplates:
+    - metadata:
+        name: remote-site-b-boot
+      spec:
+        storage:
+          resources:
+            requests:
+              storage: 12Gi
+          # No storage class on purpose: B is a fixture, so it takes the default
+          # of the cluster and needs nothing the cluster may not have. Leaving the
+          # key out selects the default; an empty value would mean "bind only a
+          # volume that was made by hand" and never provision.
+        source:
+          registry:
+            # <repo>@sha256:<digest>, the appliance of the gateway without its
+            # tag, because CDI cannot read a reference that carries both. The
+            # bring-up step puts it here from APPLIANCE_DISK_REF, so that B and A
+            # run the same image and a digest is written in one place.
+            url: docker://__APPLIANCE_DISK_REF__
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: remote-site-b
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        memory:
+          guest: 1Gi
+        devices:
+          disks:
+            - name: boot
+              disk:
+                bus: virtio
+            - name: cloudinit
+              disk:
+                bus: virtio
+          interfaces:
+            - name: default
+              bridge: {}
+          # The console of the guest goes to a container beside virt-launcher, so
+          # a boot that stalls leaves the output of the guest to read.
+          logSerialConsole: true
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: boot
+          dataVolume:
+            name: remote-site-b-boot
+        - name: cloudinit
+          cloudInitNoCloud:
+            secretRef:
+              name: remote-site-b-cloudinit

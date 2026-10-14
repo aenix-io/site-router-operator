@@ -1,0 +1,45 @@
+# The host the probes run from. The reachability, MSS and negative-security
+# scripts cannot probe from where Chainsaw runs: they have to come from B's
+# dummy interfaces, so they `kubectl exec` into this pod to
+#   - SSH into B's guest and run curl, nc and ping sourced from its dummy
+#     interfaces, into the tunnel toward A;
+#   - call the management API of A and of B with curl.
+# The JSON the calls return is parsed back in the shell of the script, so nothing
+# here needs an interpreter.
+#
+# netshoot has ssh, curl and nc but not sshpass, so the container adds it when it
+# starts and the readiness probe waits for it. That needs the internet; an
+# air-gapped run would bake it into a pinned image.
+#
+# The pod is in the namespace of the operator and carries the labels that the
+# operator is configured to admit to the management API of a gateway
+# (gateway.isolation.controller). The policy of a gateway lets in nothing else,
+# so a pod of the tenant could not make these calls, which is the point of it.
+# The labels are those the chart of the operator puts on its pods for a release
+# named site-router-operator, in the namespace site-router-system. Change them
+# if the operator is installed otherwise.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probe-driver
+  namespace: site-router-system
+  labels:
+    app: site-router-probe-driver
+    app.kubernetes.io/name: site-router-operator
+    app.kubernetes.io/instance: site-router-operator
+spec:
+  containers:
+    - name: driver
+      image: nicolaka/netshoot:v0.16@sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70
+      command:
+        - sh
+        - -c
+        - "apk add --no-cache sshpass >/dev/null 2>&1 || true; exec sleep infinity"
+      readinessProbe:
+        exec:
+          command:
+            - sh
+            - -c
+            - "command -v sshpass && command -v curl"
+        periodSeconds: 3
+        failureThreshold: 60
