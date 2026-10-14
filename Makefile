@@ -62,9 +62,19 @@ generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and
 tidy: ## Run go mod tidy in every module.
 	for m in $(MODULES); do (cd $$m && go mod tidy) || exit 1; done
 
+# The chart takes the rules of its ClusterRole and its CRDs from copies of what
+# controller-gen makes, so that they have one source: the markers in the code.
+# A CRD that is no longer made is removed from the chart too.
+.PHONY: chart-manifests
+chart-manifests: manifests ## Copy the generated ClusterRole and CRDs into the chart.
+	mkdir -p "$(CHART_DIR)/files/crds" "$(CHART_DIR)/files/rbac"
+	rm -f "$(CHART_DIR)"/files/crds/*.yaml
+	cp config/crd/bases/*.yaml "$(CHART_DIR)/files/crds/"
+	cp config/rbac/role.yaml "$(CHART_DIR)/files/rbac/role.yaml"
+
 .PHONY: check-generated
-check-generated: manifests generate tidy ## Fail if generated files or go.mod/go.sum are out of date. Run in a tree with no uncommitted changes.
-	@git diff --exit-code || { echo "Generated files are out of date: run 'make manifests generate tidy' and commit the result."; exit 1; }
+check-generated: manifests generate tidy chart-manifests ## Fail if generated files, their copies in the chart or go.mod/go.sum are out of date. Run in a tree with no uncommitted changes.
+	@git diff --exit-code || { echo "Generated files are out of date: run 'make manifests generate tidy chart-manifests' and commit the result."; exit 1; }
 	@test -z "$$(git ls-files --others --exclude-standard)" || { echo "Generation left untracked files:"; git ls-files --others --exclude-standard; exit 1; }
 
 .PHONY: check-commits
@@ -109,19 +119,36 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	"$(GOLANGCI_LINT)" config verify
 
+CHART_DIR ?= charts/site-router-operator
+
+# The chart has no defaults for the networks of the cluster, the management
+# network and the engine, so it is linted with each of the value sets in its ci
+# directory, which set them.
 .PHONY: helm-lint
-helm-lint: ## Lint the operator chart; skipped until the chart exists.
-	@if [ -d charts/site-router-operator ]; then helm lint --strict charts/site-router-operator; else echo "No chart yet (charts/site-router-operator): skipping."; fi
+helm-lint: ## Lint the operator chart with every value set in its ci directory.
+	for f in $(CHART_DIR)/ci/*-values.yaml; do echo "== $$f"; helm lint --strict $(CHART_DIR) --values "$$f" || exit 1; done
+
+# helm-unittest runs from its image, which carries the Helm it was built with, so
+# that the suites run the same here and in CI whatever Helm is installed. It makes
+# a directory for snapshots in tests/ even when there are none, so it runs as the
+# user who owns the tree.
+HELM_UNITTEST_IMAGE ?= docker.io/helmunittest/helm-unittest:4.3.0-1.2.1@sha256:28ea86c3e0b07f501f0c2e9c08b9f41e240f4a4b571cb5106b36cf0f0607e989
+
+.PHONY: helm-unittest
+helm-unittest: ## Run the helm-unittest suites of the operator chart.
+	$(CONTAINER_TOOL) run --rm --user "$$(id -u):$$(id -g)" -e HOME=/tmp -v "$(CURDIR)/$(CHART_DIR):/apps" $(HELM_UNITTEST_IMAGE) --strict .
 
 ##@ Build
 
+# The package is built, not cmd/main.go alone: the engines are imported in
+# cmd/engines.go, and a binary built from main.go would have none.
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	go build -o bin/manager ./cmd
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
+	go run ./cmd
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
@@ -142,16 +169,14 @@ docker-push: ## Push docker image with the manager.
 # - have enabled BuildKit. More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 # - be able to push the image to your registry (i.e. if you do not set a valid value via IMG=<myregistry/image:<tag>> then the export will fail)
 # To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
+# The Dockerfile cross-compiles on the platform of the builder, so no platform is emulated.
 PLATFORMS ?= linux/arm64,linux/amd64
 .PHONY: docker-buildx
 docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
 	- $(CONTAINER_TOOL) buildx create --name site-router-operator-builder
 	$(CONTAINER_TOOL) buildx use site-router-operator-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) $(if $(BASE_IMAGE),--build-arg BASE_IMAGE=$(BASE_IMAGE)) --tag ${IMG} -f Dockerfile.cross .
+	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) $(if $(BASE_IMAGE),--build-arg BASE_IMAGE=$(BASE_IMAGE)) --tag ${IMG} .
 	- $(CONTAINER_TOOL) buildx rm site-router-operator-builder
-	rm Dockerfile.cross
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.

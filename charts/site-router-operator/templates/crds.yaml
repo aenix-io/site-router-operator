@@ -1,0 +1,25 @@
+{{- /*
+The CRDs are those of config/crd/bases, which controller-gen makes from the types
+in api/v1alpha1, and make chart-manifests copies to files/crds. They are templates
+and not in crds/, which Helm installs once and never upgrades, so that a release
+of the chart brings the schema of the operator it runs. They are kept when the
+release is uninstalled or crds.install is turned off: deleting a CRD deletes
+every object of it, and with every SiteRouter every gateway.
+*/ -}}
+{{- if .Values.crds.install }}
+{{- $files := .Files.Glob "files/crds/*.yaml" }}
+{{- if not $files }}
+{{- fail "files/crds holds no CRDs: run make chart-manifests" }}
+{{- end }}
+{{- range $path, $_ := $files }}
+{{- $crd := $.Files.Get $path | fromYaml }}
+{{- if ne (get $crd "kind") "CustomResourceDefinition" }}
+{{- fail (printf "%s is not a CustomResourceDefinition" $path) }}
+{{- end }}
+{{- $meta := $crd.metadata }}
+{{- $_ := set $meta "annotations" (merge (dict "helm.sh/resource-policy" "keep") (get $meta "annotations" | default dict)) }}
+{{- $_ := set $meta "labels" (merge (include "site-router-operator.labels" $ | fromYaml) (get $meta "labels" | default dict)) }}
+---
+{{ toYaml $crd }}
+{{- end }}
+{{- end }}

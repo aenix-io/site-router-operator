@@ -1,0 +1,55 @@
+suite: what an installation must set
+templates:
+  - templates/configmap.yaml
+release:
+  name: srop
+  namespace: site-router-system
+tests:
+  - it: does not render without the networks of the cluster, the management network and the engine
+    asserts:
+      - failedTemplate:
+          errorPattern: "/config/managementCIDR"
+      - failedTemplate:
+          errorPattern: "/config/clusterNetworks/podCIDR"
+      - failedTemplate:
+          errorPattern: "/config/clusterNetworks/serviceCIDR"
+      - failedTemplate:
+          errorPattern: "/config/engine/name"
+      - failedTemplate:
+          errorPattern: "/config/engine/versions"
+      - failedTemplate:
+          errorPattern: "/config/engine/latest"
+
+  - it: renders once they are set
+    values:
+      - ../ci/minimal-values.yaml
+    asserts:
+      - isKind:
+          of: ConfigMap
+
+  - it: refuses an upgrade policy the operator does not have
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      config.upgrade.policy: Auto
+    asserts:
+      - failedTemplate:
+          errorPattern: "/config/upgrade/policy"
+
+  - it: refuses an isolation the operator does not have
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      config.gateway.isolation.mode: calico
+    asserts:
+      - failedTemplate:
+          errorPattern: "/config/gateway/isolation/mode"
+
+  - it: refuses a value the chart does not have
+    values:
+      - ../ci/minimal-values.yaml
+    set:
+      metrics.enable: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "enable"

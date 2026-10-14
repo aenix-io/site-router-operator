@@ -1,0 +1,117 @@
+{{- if .Values.metrics.enabled }}
+{{- if and .Values.metrics.serviceMonitor.enabled (not .Values.metrics.service.enabled) }}
+{{- fail "metrics.serviceMonitor.enabled needs metrics.service.enabled: the ServiceMonitor selects the Service" }}
+{{- end }}
+{{- if .Values.metrics.secure }}
+# With secure metrics the operator asks the apiserver who a caller is and whether
+# it may get /metrics.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "site-router-operator.fullname" . }}-metrics-auth
+  labels:
+    {{- include "site-router-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - authentication.k8s.io
+    resources:
+      - tokenreviews
+    verbs:
+      - create
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "site-router-operator.fullname" . }}-metrics-auth
+  labels:
+    {{- include "site-router-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "site-router-operator.fullname" . }}-metrics-auth
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "site-router-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# For the scraper: bind it to the service account of Prometheus. The chart binds
+# it to nobody.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "site-router-operator.fullname" . }}-metrics-reader
+  labels:
+    {{- include "site-router-operator.labels" . | nindent 4 }}
+rules:
+  - nonResourceURLs:
+      - /metrics
+    verbs:
+      - get
+{{- end }}
+{{- if .Values.metrics.service.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "site-router-operator.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "site-router-operator.labels" . | nindent 4 }}
+  {{- with .Values.metrics.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: {{ ternary "https" "http" .Values.metrics.secure }}
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "site-router-operator.selectorLabels" . | nindent 4 }}
+{{- end }}
+{{- if .Values.metrics.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "site-router-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "site-router-operator.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "site-router-operator.selectorLabels" . | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+    - port: {{ ternary "https" "http" .Values.metrics.secure }}
+      path: /metrics
+      scheme: {{ ternary "https" "http" .Values.metrics.secure }}
+      {{- with .Values.metrics.serviceMonitor.interval }}
+      interval: {{ . }}
+      {{- end }}
+      {{- with .Values.metrics.serviceMonitor.scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+      {{- if .Values.metrics.secure }}
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      {{- with .Values.metrics.serviceMonitor.tlsConfig }}
+      tlsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+{{- end }}
+{{- end }}

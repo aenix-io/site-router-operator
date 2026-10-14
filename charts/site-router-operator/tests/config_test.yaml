@@ -1,0 +1,47 @@
+suite: the configuration of the operator
+templates:
+  - templates/configmap.yaml
+release:
+  name: srop
+  namespace: site-router-system
+values:
+  - ../ci/minimal-values.yaml
+tests:
+  - it: names the operator pods as the only callers of the management API under cilium
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "(?m)^gateway:\\n  isolation:\\n    controller:\\n      labels:\\n        app.kubernetes.io/instance: srop\\n        app.kubernetes.io/name: site-router-operator\\n      namespace: site-router-system\\n    mode: cilium$"
+
+  - it: keeps the identity of the operator it is given under cilium
+    values:
+      - ../ci/placement-values.yaml
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "(?m)^    controller:\\n      labels:\\n        app: site-router\\n      namespace: platform-operators$"
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "app.kubernetes.io/instance"
+
+  - it: names no identity when the platform isolates the gateway
+    values:
+      - ../ci/isolation-external-values.yaml
+    asserts:
+      - notMatchRegex:
+          path: data["config.yaml"]
+          pattern: "controller:"
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "(?m)^gateway:\\n  isolation:\\n    mode: external$"
+
+  - it: passes on what it is given as it is
+    values:
+      - ../ci/annotation-values.yaml
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "(?m)^upgrade:\\n  bootTimeout: 20m\\n  importTimeout: 45m\\n  maxConcurrent: 3\\n  policy: annotation$"
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "(?m)^  latest: \"1.1\"$"

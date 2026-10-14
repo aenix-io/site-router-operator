@@ -1,0 +1,26 @@
+# Metrics with their Service and ServiceMonitor, two replicas and a disruption
+# budget, the image by digest.
+replicaCount: 2
+image:
+  tag: "0.1.0"
+  digest: sha256:aaaabbbbccccddddeeeeffff0000111122223333444455556666777788889999
+imagePullSecrets:
+  - name: registry-credentials
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+podDisruptionBudget:
+  enabled: true
+config:
+  managementCIDR: 10.244.0.0/16
+  clusterNetworks:
+    podCIDR: 10.244.0.0/16
+    serviceCIDR: 10.96.0.0/16
+  engine:
+    name: appliance
+    versions:
+      - name: "1.0"
+        image: registry.example/disk:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    latest: "1.0"

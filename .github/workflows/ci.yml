@@ -48,6 +48,13 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: "**/go.sum"
 
+      # The tests of the chart and of the rights it grants render it; under CI they
+      # fail rather than skip without Helm.
+      - name: Setup Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.0
+
       - name: Run tests
         run: make test
 
@@ -72,6 +79,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: "**/go.sum"
+
+      # The tests of the controller include those that act with the rights the
+      # chart grants, which they render.
+      - name: Setup Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.0
 
       - name: Run the CRD schema tests
         env:
@@ -109,8 +123,16 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Setup Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.0
+
       - name: Lint the chart
         run: make helm-lint
+
+      - name: Run the unit tests of the chart
+        run: make helm-unittest
 
   image:
     permissions:

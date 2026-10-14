@@ -1,0 +1,25 @@
+# Several versions, the latest not last in the list, and gateways that move only
+# when their annotation says so.
+config:
+  managementCIDR: 10.244.0.0/16
+  clusterNetworks:
+    podCIDR: 10.244.0.0/16
+    serviceCIDR: 10.96.0.0/16
+    joinCIDR: 100.64.0.0/16
+    extraCIDRs:
+      - 192.168.100.0/24
+  engine:
+    name: appliance
+    versions:
+      - name: "1.1"
+        image: registry.example/disk:1.1@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+      - name: "1.0"
+        image: registry.example/disk@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      - name: "0.9"
+        image: registry.example/disk:0.9@sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+    latest: "1.1"
+  upgrade:
+    policy: annotation
+    maxConcurrent: 3
+    importTimeout: 45m
+    bootTimeout: 20m
