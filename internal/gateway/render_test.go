@@ -41,6 +41,7 @@ func fullConfig(in *Input) {
 		Tolerations:       []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpEqual, Value: "gateways", Effect: corev1.TaintEffectNoSchedule}},
 		PriorityClassName: "network-critical",
 		RuntimeClassName:  "kata",
+		LogSerialConsole:  true,
 		Affinity: &corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{
 			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{{
 				Weight: 100,

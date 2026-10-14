@@ -376,6 +376,9 @@ func (r renderer) virtualMachine() (*unstructured.Unstructured, error) {
 		},
 		"networks": []any{map[string]any{fieldName: networkName, "pod": map[string]any{}}},
 	}
+	if cfg.VM.LogSerialConsole {
+		pod["domain"].(map[string]any)["devices"].(map[string]any)["logSerialConsole"] = true
+	}
 	if len(cfg.VM.Tolerations) > 0 {
 		tolerations := make([]any, 0, len(cfg.VM.Tolerations))
 		for _, t := range cfg.VM.Tolerations {

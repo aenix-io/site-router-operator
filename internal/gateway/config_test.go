@@ -30,6 +30,7 @@ vm:
   - {key: dedicated, operator: Equal, value: gateways, effect: NoSchedule}
   priorityClassName: network-critical
   runtimeClassName: kata
+  logSerialConsole: true
 dataVolume:
   storageClass: replicated
   blockSize: {logical: 512, physical: 4096}
@@ -50,7 +51,7 @@ func TestParseConfigAcceptsTheWholeConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.VM.PodLabels["billing.example/class"] != "network" || cfg.VM.Tolerations[0].Key != "dedicated" ||
+	if cfg.VM.PodLabels["billing.example/class"] != "network" || cfg.VM.Tolerations[0].Key != "dedicated" || !cfg.VM.LogSerialConsole ||
 		cfg.DataVolume.Source.PullMethod != "node" || cfg.Service.LoadBalancerClass != "example.com/lb" ||
 		cfg.Isolation.Controller.Namespace != "site-router-system" || len(cfg.Isolation.EgressDenyCIDRs) != 2 {
 		t.Errorf("the configuration was not read as written: %+v", cfg)

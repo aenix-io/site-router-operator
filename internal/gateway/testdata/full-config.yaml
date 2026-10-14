@@ -148,6 +148,7 @@ spec:
           interfaces:
           - bridge: {}
             name: default
+          logSerialConsole: true
         firmware:
           uuid: 11111111-2222-4333-8444-555555555555
         machine:
